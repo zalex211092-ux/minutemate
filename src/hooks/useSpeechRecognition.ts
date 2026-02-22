@@ -280,16 +280,12 @@ export const useSpeechRecognition = (): UseSpeechRecognitionReturn => {
       setError(null);
     };
 
-    recognition.onresult = (event: SpeechRecognitionEvent) => {
+        recognition.onresult = (event: SpeechRecognitionEvent) => {
       let interim = '';
       let finalTextFromThisEvent = '';
-        // DEBUG: Log what Android is sending
-  console.log('--- New result event ---');
-  console.log('Results length:', event.results.length);
-  console.log('Current final transcript:', finalTranscriptRef.current);
 
-      // Collect all final results from this event
-      for (let i = 0; i < event.results.length; i++) {
+      // Collect all final results from this event, starting from resultIndex
+      for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i];
         const transcriptText = result[0].transcript;
 
@@ -299,7 +295,6 @@ export const useSpeechRecognition = (): UseSpeechRecognitionReturn => {
           interim = transcriptText;
         }
       }
-      
 
       setInterimTranscript(interim);
 

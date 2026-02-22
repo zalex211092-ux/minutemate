@@ -299,9 +299,7 @@ export const useSpeechRecognition = (): UseSpeechRecognitionReturn => {
           interim = transcriptText;
         }
       }
-        // DEBUG: Log what we extracted
-  console.log('Final text from this event:', finalTextFromThisEvent);
-  console.log('New content extracted:', newContent);
+      
 
       setInterimTranscript(interim);
 

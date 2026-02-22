@@ -1,3 +1,4 @@
+// CLEAN HOOK v2
 import { useEffect, useRef, useState } from "react";
 
 type Status = "idle" | "recording" | "stopped";

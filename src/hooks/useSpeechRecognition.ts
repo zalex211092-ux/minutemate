@@ -96,9 +96,8 @@ export const useSpeechRecognition = (): UseSpeechRecognitionReturn => {
   const restartTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const timerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   
-  // CRITICAL: Track processed results to prevent duplicates on mobile
-  const lastProcessedIndexRef = useRef(0);
-  const processedFinalResultsRef = useRef<Set<string>>(new Set());
+  // CRITICAL: Track all final results we've ever seen to prevent duplicates across restarts
+  const seenFinalTranscriptsRef = useRef<Set<string>>(new Set());
 
   // Format time as MM:SS
   const formattedTime = useCallback(() => {
@@ -140,8 +139,7 @@ export const useSpeechRecognition = (): UseSpeechRecognitionReturn => {
     setTranscript('');
     setInterimTranscript('');
     finalTranscriptRef.current = '';
-    lastProcessedIndexRef.current = 0;
-    processedFinalResultsRef.current.clear();
+    seenFinalTranscriptsRef.current.clear();
   }, []);
 
   const resetRecording = useCallback(() => {
@@ -261,26 +259,24 @@ export const useSpeechRecognition = (): UseSpeechRecognitionReturn => {
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
       let interim = '';
-      let newFinalText = '';
+      let newFinalPieces: string[] = [];
 
-      // CRITICAL FIX: Only process results we haven't seen before
-      // Start from where we left off, not from event.resultIndex
-      const startIndex = lastProcessedIndexRef.current;
-      
-      for (let i = startIndex; i < event.results.length; i++) {
+      // Process all results from this event
+      for (let i = 0; i < event.results.length; i++) {
         const result = event.results[i];
         const transcriptText = result[0].transcript.trim();
 
         if (result.isFinal) {
-          // Check if we've already processed this exact final result
-          const resultKey = `${i}-${transcriptText}`;
-          if (!processedFinalResultsRef.current.has(resultKey)) {
-            processedFinalResultsRef.current.add(resultKey);
-            newFinalText += transcriptText + ' ';
-            lastProcessedIndexRef.current = i + 1;
+          // Create a unique key for this result
+          const resultKey = `${transcriptText}-${i}`;
+          
+          // Only process if we haven't seen this exact text before
+          if (!seenFinalTranscriptsRef.current.has(resultKey)) {
+            seenFinalTranscriptsRef.current.add(resultKey);
+            newFinalPieces.push(transcriptText);
           }
         } else {
-          // For interim results, just show the latest one
+          // For interim, just take the last one
           interim = transcriptText;
         }
       }
@@ -288,9 +284,12 @@ export const useSpeechRecognition = (): UseSpeechRecognitionReturn => {
       // Update interim transcript
       setInterimTranscript(interim);
 
-      // Update final transcript - only add NEW text, never duplicate
-      if (newFinalText) {
-        finalTranscriptRef.current += newFinalText;
+      // Add new final pieces to our accumulated transcript
+      if (newFinalPieces.length > 0) {
+        const newText = newFinalPieces.join(' ');
+        finalTranscriptRef.current = finalTranscriptRef.current 
+          ? finalTranscriptRef.current + ' ' + newText 
+          : newText;
         setTranscript(finalTranscriptRef.current.trim());
       }
     };
@@ -354,9 +353,9 @@ export const useSpeechRecognition = (): UseSpeechRecognitionReturn => {
       return;
     }
 
-    // Reset duplicate tracking
-    lastProcessedIndexRef.current = 0;
-    processedFinalResultsRef.current.clear();
+    // Reset everything for new recording
+    seenFinalTranscriptsRef.current.clear();
+    finalTranscriptRef.current = '';
     isManuallyStoppedRef.current = false;
     setMarkers([]);
     setElapsedTime(0);

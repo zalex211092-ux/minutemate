@@ -1,255 +1,109 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useEffect, useRef, useState } from "react";
 
-interface SpeechRecognitionEvent extends Event {
-  results: SpeechRecognitionResultList;
-  resultIndex: number;
-}
+type Status = "idle" | "recording" | "stopped";
 
-interface SpeechRecognitionErrorEvent extends Event {
-  error: string;
-  message: string;
-}
+export const useSpeechRecognition = () => {
+  const recognitionRef = useRef<any>(null);
 
-interface SpeechRecognitionResultList {
-  length: number;
-  item(index: number): SpeechRecognitionResult;
-  [index: number]: SpeechRecognitionResult;
-}
+  const [transcript, setTranscript] = useState("");
+  const [interimTranscript, setInterimTranscript] = useState("");
+  const [status, setStatus] = useState<Status>("idle");
 
-interface SpeechRecognitionResult {
-  isFinal: boolean;
-  length: number;
-  item(index: number): SpeechRecognitionAlternative;
-  [index: number]: SpeechRecognitionAlternative;
-}
-
-interface SpeechRecognitionAlternative {
-  transcript: string;
-  confidence: number;
-}
-
-interface SpeechRecognition extends EventTarget {
-  continuous: boolean;
-  interimResults: boolean;
-  lang: string;
-  maxAlternatives: number;
-  onresult: ((event: SpeechRecognitionEvent) => void) | null;
-  onerror: ((event: SpeechRecognitionErrorEvent) => void) | null;
-  onend: (() => void) | null;
-  onstart: (() => void) | null;
-  start(): void;
-  stop(): void;
-  abort(): void;
-}
-
-declare global {
-  interface Window {
-    SpeechRecognition: new () => SpeechRecognition;
-    webkitSpeechRecognition: new () => SpeechRecognition;
-  }
-}
-
-export type RecordingState = 'idle' | 'recording' | 'paused' | 'stopped';
-
-export interface RecordingMarker {
-  id: string;
-  timestamp: number;
-  type: 'decision' | 'action' | 'keypoint';
-  note?: string;
-}
-
-export function useSpeechRecognition() {
-  const [state, setState] = useState<RecordingState>('idle');
-  const [transcript, setTranscript] = useState('');
-  const [interimTranscript, setInterimTranscript] = useState('');
-  const [recordingTime, setRecordingTime] = useState(0);
-  const [markers, setMarkers] = useState<RecordingMarker[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [isSupported, setIsSupported] = useState(true);
-  const finalTranscriptRef = useRef("");
-const stateRef = useRef(state);
-
-useEffect(() => {
-  stateRef.current = state;
-}, [state]);
-
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const startTimeRef = useRef<number>(0);
-  const pausedTimeRef = useRef<number>(0);
+  const shouldRestartRef = useRef(false);
+  const isManuallyStoppedRef = useRef(false);
 
   useEffect(() => {
-    if (!window.SpeechRecognition && !window.webkitSpeechRecognition) {
-      setIsSupported(false);
-      setError('Speech recognition is not supported in this browser. Please use Chrome, Edge, or Safari.');
+    const SpeechRecognition =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      console.warn("SpeechRecognition not supported");
       return;
     }
 
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    recognitionRef.current = new SpeechRecognition();
-    recognitionRef.current.continuous = true;
-    recognitionRef.current.interimResults = true;
-    recognitionRef.current.lang = 'en-GB';
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = "en-GB";
 
-    recognitionRef.current.onresult = (event: SpeechRecognitionEvent) => {
-  let interim = "";
-  let finalChunk = "";
+    recognitionRef.current = recognition;
 
-  for (let i = event.resultIndex; i < event.results.length; i++) {
-    const result = event.results[i];
-    const text = result[0].transcript;
+    recognition.onresult = (event: any) => {
+      let finalText = "";
+      let interimText = "";
 
-    if (result.isFinal) {
-      finalChunk += text + " ";
-    } else {
-      interim += text;
-    }
-  }
+      for (let i = 0; i < event.results.length; i++) {
+        const result = event.results[i];
+        const text = result[0]?.transcript ?? "";
 
-  if (finalChunk) {
-    setTranscript((prev) => (prev + finalChunk).replace(/\s+/g, " ").trim());
-  }
+        if (result.isFinal) finalText += text + " ";
+        else interimText += text;
+      }
 
-  setInterimTranscript(interim);
-};
+      setTranscript(finalText.trim());
+      setInterimTranscript(interimText);
     };
 
-    recognitionRef.current.onerror = (event: SpeechRecognitionErrorEvent) => {
-      console.error('Speech recognition error:', event.error);
-      if (event.error === 'not-allowed') {
-        setError('Microphone access denied. Please allow microphone access to use recording.');
-        setState('idle');
-      } else if (event.error === 'no-speech') {
-        // Ignore no-speech errors, just continue
-      } else {
-        setError(`Speech recognition error: ${event.error}`);
+    recognition.onend = () => {
+      if (shouldRestartRef.current && !isManuallyStoppedRef.current) {
+        try {
+          recognition.start();
+        } catch (err) {
+          console.warn("Restart blocked:", err);
+        }
       }
     };
 
-    recognitionRef.current.onend = () => {
-  if (stateRef.current === 'recording') {
-    try {
-      recognitionRef.current?.start();
-    } catch (e) {
-      // ignore
-    }
-  }
-};
+    recognition.onerror = (event: any) => {
+      console.warn("Speech error:", event?.error || event);
+      if (event?.error === "not-allowed") shouldRestartRef.current = false;
+    };
 
     return () => {
-      recognitionRef.current?.abort();
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-      }
+      try {
+        recognition.stop();
+      } catch {}
     };
   }, []);
 
-  const startRecording = useCallback(() => {
+  const startRecording = () => {
     if (!recognitionRef.current) return;
 
-    setError(null);
-    setTranscript('');
-    setInterimTranscript('');
-    setMarkers([]);
-    setRecordingTime(0);
-    startTimeRef.current = Date.now();
-    pausedTimeRef.current = 0;
+    isManuallyStoppedRef.current = false;
+    shouldRestartRef.current = true;
 
     try {
       recognitionRef.current.start();
-      setState('recording');
-
-      timerRef.current = setInterval(() => {
-        setRecordingTime(Math.floor((Date.now() - startTimeRef.current) / 1000));
-      }, 1000);
-    } catch (e) {
-      setError('Failed to start recording. Please try again.');
+      setStatus("recording");
+    } catch (err) {
+      console.warn("Start error:", err);
     }
-  }, []);
+  };
 
-  const pauseRecording = useCallback(() => {
+  const stopRecording = () => {
     if (!recognitionRef.current) return;
 
-    recognitionRef.current.stop();
-    setState('paused');
-    pausedTimeRef.current = Date.now() - startTimeRef.current;
-
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-  }, []);
-
-  const resumeRecording = useCallback(() => {
-    if (!recognitionRef.current) return;
+    shouldRestartRef.current = false;
+    isManuallyStoppedRef.current = true;
 
     try {
-      recognitionRef.current.start();
-      setState('recording');
-      startTimeRef.current = Date.now() - pausedTimeRef.current;
+      recognitionRef.current.stop();
+    } catch {}
 
-      timerRef.current = setInterval(() => {
-        setRecordingTime(Math.floor((Date.now() - startTimeRef.current) / 1000));
-      }, 1000);
-    } catch (e) {
-      setError('Failed to resume recording. Please try again.');
-    }
-  }, []);
+    setStatus("stopped");
+  };
 
-  const stopRecording = useCallback(() => {
-    if (!recognitionRef.current) return;
-
-    recognitionRef.current.stop();
-    setState('stopped');
-
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-  }, []);
-
-  const addMarker = useCallback((type: RecordingMarker['type'], note?: string) => {
-    const marker: RecordingMarker = {
-      id: crypto.randomUUID(),
-      timestamp: recordingTime,
-      type,
-      note,
-    };
-    setMarkers((prev) => [...prev, marker]);
-  }, [recordingTime]);
-
-  const formatTime = useCallback((seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  }, []);
-
-  const resetRecording = useCallback(() => {
-    setState('idle');
-    setTranscript('');
-    setInterimTranscript('');
-    setRecordingTime(0);
-    setMarkers([]);
-    setError(null);
-    startTimeRef.current = 0;
-    pausedTimeRef.current = 0;
-  }, []);
+  const resetTranscript = () => {
+    setTranscript("");
+    setInterimTranscript("");
+  };
 
   return {
-    state,
     transcript,
     interimTranscript,
-    fullTranscript: transcript + (interimTranscript ? ' ' + interimTranscript : ''),
-    recordingTime,
-    formattedTime: formatTime(recordingTime),
-    markers,
-    error,
-    isSupported,
+    status,
     startRecording,
-    pauseRecording,
-    resumeRecording,
     stopRecording,
-    addMarker,
-    resetRecording,
+    resetTranscript,
   };
-}
+};

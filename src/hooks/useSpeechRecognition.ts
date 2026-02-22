@@ -66,6 +66,12 @@ export function useSpeechRecognition() {
   const [markers, setMarkers] = useState<RecordingMarker[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isSupported, setIsSupported] = useState(true);
+  const finalTranscriptRef = useRef("");
+const stateRef = useRef(state);
+
+useEffect(() => {
+  stateRef.current = state;
+}, [state]);
 
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -86,22 +92,26 @@ export function useSpeechRecognition() {
     recognitionRef.current.lang = 'en-GB';
 
     recognitionRef.current.onresult = (event: SpeechRecognitionEvent) => {
-      let interim = '';
-      let final = '';
+  let interim = "";
+  let finalChunk = "";
 
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const result = event.results[i];
-        if (result.isFinal) {
-          final += result[0].transcript + ' ';
-        } else {
-          interim += result[0].transcript;
-        }
-      }
+  for (let i = event.resultIndex; i < event.results.length; i++) {
+    const result = event.results[i];
+    const text = result[0].transcript;
 
-      if (final) {
-        setTranscript((prev) => prev + final);
-      }
-      setInterimTranscript(interim);
+    if (result.isFinal) {
+      finalChunk += text + " ";
+    } else {
+      interim += text;
+    }
+  }
+
+  if (finalChunk) {
+    setTranscript((prev) => (prev + finalChunk).replace(/\s+/g, " ").trim());
+  }
+
+  setInterimTranscript(interim);
+};
     };
 
     recognitionRef.current.onerror = (event: SpeechRecognitionErrorEvent) => {
@@ -117,15 +127,14 @@ export function useSpeechRecognition() {
     };
 
     recognitionRef.current.onend = () => {
-      if (state === 'recording') {
-        // Restart if we're still supposed to be recording
-        try {
-          recognitionRef.current?.start();
-        } catch (e) {
-          // Already started, ignore
-        }
-      }
-    };
+  if (stateRef.current === 'recording') {
+    try {
+      recognitionRef.current?.start();
+    } catch (e) {
+      // ignore
+    }
+  }
+};
 
     return () => {
       recognitionRef.current?.abort();

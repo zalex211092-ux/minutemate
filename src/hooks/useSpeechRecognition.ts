@@ -95,6 +95,10 @@ export const useSpeechRecognition = (): UseSpeechRecognitionReturn => {
   const finalTranscriptRef = useRef('');
   const restartTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const timerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  
+  // CRITICAL: Track processed results to prevent duplicates on mobile
+  const lastProcessedIndexRef = useRef(0);
+  const processedFinalResultsRef = useRef<Set<string>>(new Set());
 
   // Format time as MM:SS
   const formattedTime = useCallback(() => {
@@ -113,7 +117,6 @@ export const useSpeechRecognition = (): UseSpeechRecognitionReturn => {
       }
     };
     
-    // Delay check slightly to ensure window is ready
     const timer = setTimeout(checkSupport, 100);
     return () => clearTimeout(timer);
   }, []);
@@ -137,6 +140,8 @@ export const useSpeechRecognition = (): UseSpeechRecognitionReturn => {
     setTranscript('');
     setInterimTranscript('');
     finalTranscriptRef.current = '';
+    lastProcessedIndexRef.current = 0;
+    processedFinalResultsRef.current.clear();
   }, []);
 
   const resetRecording = useCallback(() => {
@@ -256,39 +261,47 @@ export const useSpeechRecognition = (): UseSpeechRecognitionReturn => {
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
       let interim = '';
-      let final = '';
+      let newFinalText = '';
 
-      // Loop through results - CRITICAL: use resultIndex to avoid duplicates
-      for (let i = event.resultIndex; i < event.results.length; i++) {
+      // CRITICAL FIX: Only process results we haven't seen before
+      // Start from where we left off, not from event.resultIndex
+      const startIndex = lastProcessedIndexRef.current;
+      
+      for (let i = startIndex; i < event.results.length; i++) {
         const result = event.results[i];
-        const transcript = result[0].transcript;
+        const transcriptText = result[0].transcript.trim();
 
         if (result.isFinal) {
-          final += transcript;
+          // Check if we've already processed this exact final result
+          const resultKey = `${i}-${transcriptText}`;
+          if (!processedFinalResultsRef.current.has(resultKey)) {
+            processedFinalResultsRef.current.add(resultKey);
+            newFinalText += transcriptText + ' ';
+            lastProcessedIndexRef.current = i + 1;
+          }
         } else {
-          interim += transcript;
+          // For interim results, just show the latest one
+          interim = transcriptText;
         }
       }
 
-      // Update interim transcript (always overwrite, never append)
+      // Update interim transcript
       setInterimTranscript(interim);
 
-      // Update final transcript - prevent duplicates
-      if (final) {
-        finalTranscriptRef.current += final;
-        setTranscript(finalTranscriptRef.current);
+      // Update final transcript - only add NEW text, never duplicate
+      if (newFinalText) {
+        finalTranscriptRef.current += newFinalText;
+        setTranscript(finalTranscriptRef.current.trim());
       }
     };
 
     recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
       console.error('Speech recognition error:', event.error);
       
-      // Don't show error for no-speech (common on mobile)
       if (event.error === 'no-speech') {
         return;
       }
 
-      // Handle "not-allowed" error (permissions)
       if (event.error === 'not-allowed') {
         setError('Microphone permission denied. Please allow microphone access.');
         setIsRecording(false);
@@ -296,14 +309,12 @@ export const useSpeechRecognition = (): UseSpeechRecognitionReturn => {
         return;
       }
 
-      // Handle "aborted" - usually means manual stop, ignore
       if (event.error === 'aborted') {
         return;
       }
 
       setError(`Error: ${event.error}`);
       
-      // Try to restart on certain errors
       if (!isManuallyStoppedRef.current && 
           (event.error === 'network' || event.error === 'service-not-allowed')) {
         restartTimeoutRef.current = setTimeout(() => {
@@ -318,9 +329,7 @@ export const useSpeechRecognition = (): UseSpeechRecognitionReturn => {
       setIsRecording(false);
       setInterimTranscript('');
 
-      // Auto-restart if not manually stopped and not paused/stopped
       if (!isManuallyStoppedRef.current && state !== 'paused' && state !== 'stopped') {
-        // Small delay to prevent rapid restart loops
         restartTimeoutRef.current = setTimeout(() => {
           if (!isManuallyStoppedRef.current) {
             startRecordingInternal();
@@ -345,12 +354,14 @@ export const useSpeechRecognition = (): UseSpeechRecognitionReturn => {
       return;
     }
 
+    // Reset duplicate tracking
+    lastProcessedIndexRef.current = 0;
+    processedFinalResultsRef.current.clear();
     isManuallyStoppedRef.current = false;
     setMarkers([]);
     setElapsedTime(0);
     setState('recording');
     
-    // Start timer
     timerIntervalRef.current = setInterval(() => {
       setElapsedTime(prev => prev + 1);
     }, 1000);

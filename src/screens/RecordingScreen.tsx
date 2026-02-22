@@ -55,6 +55,10 @@ export function RecordingScreen({ meeting, onUpdateMeeting }: RecordingScreenPro
   };
 
  const handleContinue = () => {
+  console.log('Continue clicked');
+  console.log('Full transcript:', fullTranscript);
+  console.log('Markers:', markers);
+  
   const updated = {
     ...meeting,
     transcriptText: fullTranscript,
@@ -63,8 +67,11 @@ export function RecordingScreen({ meeting, onUpdateMeeting }: RecordingScreenPro
     updatedAt: new Date().toISOString(),
   };
   onUpdateMeeting(updated);
+  console.log('Meeting updated, navigating...');
+  
   setTimeout(() => {
     navigate('/transcript');
+    console.log('Navigation called');
   }, 100);
 };
 

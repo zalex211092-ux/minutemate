@@ -54,16 +54,19 @@ export function RecordingScreen({ meeting, onUpdateMeeting }: RecordingScreenPro
     stopRecording();
   };
 
-  const handleContinue = () => {
-    const updated = {
-      ...meeting,
-      transcriptText: fullTranscript,
-      consentConfirmed: consentChecked,
-      updatedAt: new Date().toISOString(),
-    };
-    onUpdateMeeting(updated);
-    navigate('/transcript');
+ const handleContinue = () => {
+  const updated = {
+    ...meeting,
+    transcriptText: fullTranscript,
+    markers: markers,
+    consentConfirmed: consentChecked,
+    updatedAt: new Date().toISOString(),
   };
+  onUpdateMeeting(updated);
+  setTimeout(() => {
+    navigate('/transcript');
+  }, 100);
+};
 
   const handleAddMarker = (type: RecordingMarker['type']) => {
     addMarker(type);
@@ -261,7 +264,7 @@ export function RecordingScreen({ meeting, onUpdateMeeting }: RecordingScreenPro
         <div>
           <h3 className="text-sm font-medium text-slate-700 mb-3">Markers</h3>
           <div className="space-y-2">
-            {markers.map((marker) => (
+          {markers.map((marker: any) => (
               <div
                 key={marker.id}
                 className={`flex items-center gap-3 p-3 rounded-xl ${

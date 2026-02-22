@@ -2,7 +2,7 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 
-// Type definitions for Web Speech API
+// Type definitions remain the same...
 interface SpeechRecognitionEvent extends Event {
   results: SpeechRecognitionResultList;
   resultIndex: number;
@@ -73,7 +73,6 @@ export interface UseSpeechRecognitionReturn {
   resetRecording: () => void;
 }
 
-// Check if speech recognition is supported
 const isSpeechRecognitionSupported = (): boolean => {
   if (typeof window === 'undefined') return false;
   return !!(window as any).SpeechRecognition || !!(window as any).webkitSpeechRecognition;
@@ -96,17 +95,15 @@ export const useSpeechRecognition = (): UseSpeechRecognitionReturn => {
   const restartTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const timerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   
-  // CRITICAL: Track all final results we've ever seen to prevent duplicates across restarts
-  const seenFinalTranscriptsRef = useRef<Set<string>>(new Set());
+  // NEW: Track the last final transcript to detect duplicates
+  const lastFinalTranscriptRef = useRef('');
 
-  // Format time as MM:SS
   const formattedTime = useCallback(() => {
     const minutes = Math.floor(elapsedTime / 60);
     const seconds = elapsedTime % 60;
     return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
   }, [elapsedTime]);
 
-  // Check for browser support on mount
   useEffect(() => {
     const checkSupport = () => {
       const supported = isSpeechRecognitionSupported();
@@ -120,18 +117,11 @@ export const useSpeechRecognition = (): UseSpeechRecognitionReturn => {
     return () => clearTimeout(timer);
   }, []);
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (restartTimeoutRef.current) {
-        clearTimeout(restartTimeoutRef.current);
-      }
-      if (timerIntervalRef.current) {
-        clearInterval(timerIntervalRef.current);
-      }
-      if (recognitionRef.current) {
-        recognitionRef.current.abort();
-      }
+      if (restartTimeoutRef.current) clearTimeout(restartTimeoutRef.current);
+      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+      if (recognitionRef.current) recognitionRef.current.abort();
     };
   }, []);
 
@@ -139,7 +129,7 @@ export const useSpeechRecognition = (): UseSpeechRecognitionReturn => {
     setTranscript('');
     setInterimTranscript('');
     finalTranscriptRef.current = '';
-    seenFinalTranscriptsRef.current.clear();
+    lastFinalTranscriptRef.current = '';
   }, []);
 
   const resetRecording = useCallback(() => {
@@ -204,12 +194,10 @@ export const useSpeechRecognition = (): UseSpeechRecognitionReturn => {
     isManuallyStoppedRef.current = false;
     setState('recording');
     
-    // Restart timer
     timerIntervalRef.current = setInterval(() => {
       setElapsedTime(prev => prev + 1);
     }, 1000);
     
-    // Restart speech recognition
     startRecordingInternal();
   }, []);
 
@@ -229,6 +217,43 @@ export const useSpeechRecognition = (): UseSpeechRecognitionReturn => {
     setMarkers(prev => [...prev, newMarker]);
   }, [elapsedTime]);
 
+  // NEW: Smart deduplication function
+  const extractNewContent = useCallback((incomingText: string, existingText: string): string => {
+    if (!existingText) return incomingText;
+    if (!incomingText) return '';
+    
+    const incoming = incomingText.trim().toLowerCase();
+    const existing = existingText.trim().toLowerCase();
+    
+    // Case 1: Exact match or incoming is contained in existing
+    if (existing.includes(incoming)) return '';
+    
+    // Case 2: Existing is contained in incoming (Android cumulative behavior)
+    if (incoming.includes(existing)) {
+      // Return only the new part
+      const newPart = incomingText.trim().slice(existing.length).trim();
+      return newPart;
+    }
+    
+    // Case 3: Partial overlap at the end (rare but possible)
+    // Find the longest suffix of existing that matches prefix of incoming
+    const existingWords = existing.split(' ');
+    for (let i = existingWords.length; i > 0; i--) {
+      const suffix = existingWords.slice(-i).join(' ');
+      if (incoming.startsWith(suffix)) {
+        const incomingWords = incomingText.trim().split(' ');
+        const existingWordsCount = suffix.split(' ').length;
+        if (incomingWords.length > existingWordsCount) {
+          return incomingWords.slice(existingWordsCount).join(' ');
+        }
+        return '';
+      }
+    }
+    
+    // Case 4: No overlap, treat as new sentence
+    return incomingText.trim();
+  }, []);
+
   const startRecordingInternal = useCallback(() => {
     const SpeechRecognitionAPI = 
       (window as any).SpeechRecognition || 
@@ -242,11 +267,9 @@ export const useSpeechRecognition = (): UseSpeechRecognitionReturn => {
 
     setError(null);
 
-    // Create new recognition instance
     const recognition = new SpeechRecognitionAPI();
     recognitionRef.current = recognition;
 
-    // Critical settings for mobile compatibility
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = 'en-US';
@@ -259,47 +282,40 @@ export const useSpeechRecognition = (): UseSpeechRecognitionReturn => {
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
       let interim = '';
-      let newFinalPieces: string[] = [];
+      let finalTextFromThisEvent = '';
 
-      // Process all results from this event
+      // Collect all final results from this event
       for (let i = 0; i < event.results.length; i++) {
         const result = event.results[i];
-        const transcriptText = result[0].transcript.trim();
+        const transcriptText = result[0].transcript;
 
         if (result.isFinal) {
-          // Create a unique key for this result
-          const resultKey = `${transcriptText}-${i}`;
-          
-          // Only process if we haven't seen this exact text before
-          if (!seenFinalTranscriptsRef.current.has(resultKey)) {
-            seenFinalTranscriptsRef.current.add(resultKey);
-            newFinalPieces.push(transcriptText);
-          }
+          finalTextFromThisEvent += transcriptText;
         } else {
-          // For interim, just take the last one
           interim = transcriptText;
         }
       }
 
-      // Update interim transcript
       setInterimTranscript(interim);
 
-      // Add new final pieces to our accumulated transcript
-      if (newFinalPieces.length > 0) {
-        const newText = newFinalPieces.join(' ');
-        finalTranscriptRef.current = finalTranscriptRef.current 
-          ? finalTranscriptRef.current + ' ' + newText 
-          : newText;
-        setTranscript(finalTranscriptRef.current.trim());
+      // Process final text with smart deduplication
+      if (finalTextFromThisEvent.trim()) {
+        const currentFinal = finalTranscriptRef.current;
+        const newContent = extractNewContent(finalTextFromThisEvent, currentFinal);
+        
+        if (newContent) {
+          // Add space if needed
+          const separator = currentFinal && !currentFinal.endsWith(' ') ? ' ' : '';
+          finalTranscriptRef.current = currentFinal + separator + newContent;
+          setTranscript(finalTranscriptRef.current.trim());
+        }
       }
     };
 
     recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
       console.error('Speech recognition error:', event.error);
       
-      if (event.error === 'no-speech') {
-        return;
-      }
+      if (event.error === 'no-speech') return;
 
       if (event.error === 'not-allowed') {
         setError('Microphone permission denied. Please allow microphone access.');
@@ -308,18 +324,14 @@ export const useSpeechRecognition = (): UseSpeechRecognitionReturn => {
         return;
       }
 
-      if (event.error === 'aborted') {
-        return;
-      }
+      if (event.error === 'aborted') return;
 
       setError(`Error: ${event.error}`);
       
       if (!isManuallyStoppedRef.current && 
           (event.error === 'network' || event.error === 'service-not-allowed')) {
         restartTimeoutRef.current = setTimeout(() => {
-          if (!isManuallyStoppedRef.current) {
-            startRecordingInternal();
-          }
+          if (!isManuallyStoppedRef.current) startRecordingInternal();
         }, 1000);
       }
     };
@@ -330,9 +342,7 @@ export const useSpeechRecognition = (): UseSpeechRecognitionReturn => {
 
       if (!isManuallyStoppedRef.current && state !== 'paused' && state !== 'stopped') {
         restartTimeoutRef.current = setTimeout(() => {
-          if (!isManuallyStoppedRef.current) {
-            startRecordingInternal();
-          }
+          if (!isManuallyStoppedRef.current) startRecordingInternal();
         }, 300);
       }
     };
@@ -344,7 +354,7 @@ export const useSpeechRecognition = (): UseSpeechRecognitionReturn => {
       setError('Failed to start speech recognition');
       setIsRecording(false);
     }
-  }, [state]);
+  }, [state, extractNewContent]);
 
   const startRecording = useCallback(() => {
     if (!isSpeechRecognitionSupported()) {
@@ -353,9 +363,9 @@ export const useSpeechRecognition = (): UseSpeechRecognitionReturn => {
       return;
     }
 
-    // Reset everything for new recording
-    seenFinalTranscriptsRef.current.clear();
+    // Reset everything
     finalTranscriptRef.current = '';
+    lastFinalTranscriptRef.current = '';
     isManuallyStoppedRef.current = false;
     setMarkers([]);
     setElapsedTime(0);

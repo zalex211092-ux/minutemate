@@ -1,42 +1,155 @@
-import type { Meeting, MeetingType, Attendee, ActionItem } from '../types';
+import type { Meeting, MeetingType, ActionItem } from '../types';
+
+// ============================================================================
+// MAIN EXPORT
+// ============================================================================
 
 export async function generateMinutes(meeting: Meeting): Promise<string> {
-  return generateStructuredMinutes(meeting);
-}
+  const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
 
-interface ParsedContent {
-  keyPoints: Map<string, string[]>;
-  decisions: string[];
-  transcriptActions: ActionItem[];
-  fallbackPoints: string[];
-}
-
-// ============================================================================
-// MAIN GENERATION FUNCTION
-// ============================================================================
-
-function generateStructuredMinutes(meeting: Meeting): string {
-  const { type, title, date, startTime, location, caseRef, attendees, transcriptText, actions: existingActions } = meeting;
-
-  const { keyPoints, decisions, transcriptActions, fallbackPoints } = parseTranscript(transcriptText);
-  const allActions = mergeAndConsolidateActions(existingActions, transcriptActions);
-  const consolidatedKeyPoints = consolidateKeyPoints(keyPoints);
-
-  // Fallback: only use cleaned fallback points, never raw transcript sentences
-  if (consolidatedKeyPoints.size === 0 && fallbackPoints.length > 0) {
-    consolidatedKeyPoints.set('General Matters', fallbackPoints);
+  if (apiKey) {
+    try {
+      return await generateWithClaude(meeting, apiKey);
+    } catch (error) {
+      console.error('Claude API failed, falling back to basic generator:', error);
+    }
   }
 
-  const attendeesSection = formatAttendees(attendees, type);
-  const keyPointsSection = formatKeyPoints(consolidatedKeyPoints);
-  const decisionsSection = formatDecisions(decisions);
-  const actionsTable = formatActionsTable(allActions);
-  const nextSteps = formatNextSteps(type, allActions);
-  const execSummary = generateExecutiveSummary(consolidatedKeyPoints, allActions, title, type);
+  return generateBasicMinutes(meeting);
+}
+
+// ============================================================================
+// CLAUDE AI GENERATION
+// ============================================================================
+
+async function generateWithClaude(meeting: Meeting, apiKey: string): Promise<string> {
+  const { type, title, date, startTime, location, caseRef, attendees, transcriptText } = meeting;
+
+  const attendeeList = attendees.map(a => `${a.name} (${a.role})`).join(', ');
+  const meetingTypeLabel = formatMeetingType(type);
+  const formattedDate = formatDate(date);
+  const confidentiality = getConfidentialityLevel(type);
+
+  const prompt = `You are a professional minute-taker. Your job is to convert a raw speech-to-text transcript into clean, professional meeting minutes in markdown format.
+
+The transcript may be messy, unpunctuated, and contain speech errors. Use your understanding to interpret what was actually meant and produce accurate, professional output.
+
+MEETING DETAILS:
+- Title: ${title}
+- Date: ${formattedDate}
+- Time: ${startTime || 'Not stated'}
+- Type: ${meetingTypeLabel}
+- Location: ${location || 'Not stated'}
+- Attendees: ${attendeeList || 'Not stated'}
+${caseRef ? `- Case Reference: ${caseRef}` : ''}
+
+TRANSCRIPT:
+"${transcriptText}"
+
+OUTPUT INSTRUCTIONS:
+Produce meeting minutes in this EXACT markdown format. Do not deviate from the structure.
+
+# ${formatMeetingTypeHeader(type)} MINUTES
+
+[One sentence executive summary: meeting title, topics covered, number of actions]
+
+## Meeting Information
+
+| Field | Details |
+|:------|:--------|
+| **Date** | ${formattedDate} |
+| **Time** | ${startTime || 'Not stated'} |
+| **Type** | ${meetingTypeLabel} |
+| **${type === 'disciplinary' || type === 'investigation' ? 'Location' : 'Venue'}** | ${location || 'Not stated'} |
+| **Subject** | ${title} |
+${caseRef ? `| **Case Ref** | ${caseRef} |` : ''}
+
+## Attendees (${attendees.length})
+
+${attendees.map(a => `- **${a.name}** – ${a.role}`).join('\n') || 'No attendees recorded.'}
+
+## Discussion Summary
+
+[Group discussion points under bold topic headings. Each point as a bullet. Be professional and concise. Ignore filler words, greetings, and noise. Interpret speech errors — for example "Baja cells" likely means "Baja sales". Topics might include: Sales & Business Development, Attendance & Scheduling, Performance & Development, etc.]
+
+## Decisions
+
+[List any formal decisions made, or write: No formal decisions recorded.]
+
+## Action Items ([count])
+
+| Action | Owner | Deadline |
+|:-------|:-----:|:---------|
+[One row per action. Owner is Team/Manager/HR/All. Deadline is TBC if not stated. Strip trailing noise like "have a coffee". Convert "make sure you're not late" into "Arrive punctually for all scheduled shifts".]
+
+## Follow-up
+
+- Complete [n] action items listed above
+${type === '1:1' ? '- Next 1:1 to be scheduled per regular cadence\n- Development actions to be reviewed at next session' : ''}
+${type === 'team' ? '- Action progress to be reviewed at next team meeting' : ''}
+${type === 'disciplinary' ? '- HR to process formal documentation within 48 hours\n- Written outcome to be issued within 5 working days\n- Employee rights to appeal to be confirmed in writing' : ''}
+${type === 'investigation' ? '- Investigation findings to be compiled\n- Decision on next steps within 10 working days' : ''}
+- Minutes to be circulated to all attendees within 24 hours
+${type === 'disciplinary' || type === 'investigation' ? `
+## HR Documentation
+
+**Allegations:** Presented to employee and response recorded.
+**Evidence:** Reviewed and acknowledged by employee.
+**Mitigation:** ${meeting.consentConfirmed ? 'Employee provided response and mitigation.' : 'Pending employee response.'}
+**Outcome:** To be confirmed in writing within 5 working days.
+**Appeal Rights:** Employee has 5 working days from written confirmation date to lodge an appeal.` : ''}
+
+---
+Document prepared by MinuteMate | ${confidentiality} | Generated: ${new Date().toLocaleDateString('en-GB')}
+
+IMPORTANT RULES:
+- Never include raw transcript sentences verbatim
+- Never include filler words (um, uh, like, you know)
+- Never include greetings (hello, welcome, thanks for coming)
+- Fix speech-to-text errors using context (e.g. "cells" → "sales", "Baja" is likely a place/brand)
+- Strip trailing noise from actions (coffee, cigarettes, "if you want")
+- Keep discussion points concise and professional (1-2 sentences max)
+- If transcript is very short or unclear, still produce all sections with appropriate "not stated" placeholders
+- Use only ASCII characters, no Unicode bullets or dashes`;
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 2000,
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error(`API error ${response.status}: ${err}`);
+  }
+
+  const data = await response.json();
+  return data.content[0].text;
+}
+
+// ============================================================================
+// BASIC FALLBACK (used if no API key)
+// ============================================================================
+
+function generateBasicMinutes(meeting: Meeting): string {
+  const { type, title, date, startTime, location, caseRef, attendees } = meeting;
+
+  const attendeesSection = attendees.length > 0
+    ? attendees.map(a => `- **${a.name}** – ${a.role}`).join('\n')
+    : 'No attendees recorded.';
 
   return `# ${formatMeetingTypeHeader(type)} MINUTES
 
-${execSummary}
+**${title}** – Meeting held. Please review transcript and edit minutes manually.
 
 ## Meeting Information
 
@@ -55,20 +168,21 @@ ${attendeesSection}
 
 ## Discussion Summary
 
-${keyPointsSection}
+No discussion points extracted. Please edit minutes manually.
 
 ## Decisions
 
-${decisionsSection}
+No formal decisions recorded.
 
-## Action Items (${allActions.length})
+## Action Items (0)
 
-${actionsTable}
+| Action | Owner | Deadline |
+|:-------|:-----:|:---------|
+| No actions recorded | - | - |
 
 ## Follow-up
 
-${nextSteps}
-${type === 'disciplinary' || type === 'investigation' ? generateHRAddendum(type, meeting.consentConfirmed) : ''}
+- Minutes to be circulated to all attendees within 24 hours
 
 ---
 Document prepared by MinuteMate | ${getConfidentialityLevel(type)} | Generated: ${new Date().toLocaleDateString('en-GB')}
@@ -76,449 +190,40 @@ Document prepared by MinuteMate | ${getConfidentialityLevel(type)} | Generated: 
 }
 
 // ============================================================================
-// TRANSCRIPT PARSING
+// EXTRACTION FROM SAVED MINUTES TEXT
 // ============================================================================
 
-function parseTranscript(transcript: string | undefined): ParsedContent {
-  const keyPoints = new Map<string, string[]>();
-  const decisions: string[] = [];
+export function extractActionsFromMinutes(minutesText: string): ActionItem[] {
   const actions: ActionItem[] = [];
-  const fallbackPoints: string[] = [];
 
-  if (!transcript || transcript.trim().length < 5) {
-    return { keyPoints, decisions, transcriptActions: actions, fallbackPoints };
-  }
+  const match = minutesText.match(
+    /\|\s*Action\s*\|\s*Owner\s*\|\s*Deadline\s*\|\n\|[-:| ]+\|\n([\s\S]*?)(?=\n##|\n---|$)/i
+  );
 
-  const text = preprocessTranscript(transcript);
-  const units = extractSemanticUnits(text);
+  if (match) {
+    const lines = match[1]
+      .split('\n')
+      .filter(l => l.startsWith('|') && !/Action\s*\|/i.test(l))
+      .map(l => l.split('|').map(p => p.trim()).filter(Boolean));
 
-  for (const unit of units) {
-    if (isNoise(unit)) continue;
-
-    // Actions — strict detection first
-    const action = extractAction(unit);
-    if (action) {
-      actions.push(action);
-      continue;
-    }
-
-    if (isFragment(unit)) continue;
-
-    const decision = extractDecision(unit);
-    if (decision) {
-      decisions.push(decision);
-      continue;
-    }
-
-    const point = createDiscussionPoint(unit);
-    if (point) {
-      const topic = detectTopic(point);
-      if (!keyPoints.has(topic)) keyPoints.set(topic, []);
-      keyPoints.get(topic)!.push(point);
-    } else {
-      const fallback = buildFallbackPoint(unit);
-      if (fallback) fallbackPoints.push(fallback);
+    for (const parts of lines) {
+      if (parts.length >= 2 && !parts[0].includes('No actions')) {
+        actions.push({
+          id: crypto.randomUUID(),
+          action: parts[0],
+          owner: parts[1],
+          deadline: parts[2],
+        });
+      }
     }
   }
 
-  return { keyPoints, decisions, transcriptActions: actions, fallbackPoints };
-}
-
-// ============================================================================
-// PREPROCESSING
-// ============================================================================
-
-function preprocessTranscript(text: string): string {
-  return text
-    .replace(/\s+/g, ' ')
-    .replace(/\b(um|uh|ah|er|hm|like|you know|I mean|sort of|kind of|basically|literally|actually|honestly|right so|so yeah|yeah so)\b/gi, ' ')
-    .replace(/([a-z])([A-Z])/g, '$1 $2')
-    .replace(/\b(\w+)\s+\1\b/gi, '$1')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
-}
-
-function extractSemanticUnits(text: string): string[] {
-  const marked = text
-    .replace(/^(?:and\s+)?(?:welcome|hello|hi|hey|good morning|good afternoon|good evening)[,.\s]*/i, '')
-    .replace(/^(?:thank you|thanks)\s+(?:for\s+)?(?:coming|joining|attending)[,.\s]*/i, '')
-    .replace(/\b(first(?:ly)?|first of all|to start|to begin with?)\b/gi, '.SPLIT.')
-    .replace(/\b(second(?:ly)?|next(?:\s+thing)?|after that|following that)\b/gi, '.SPLIT.')
-    .replace(/\b(another thing|another point|also|additionally|furthermore|moreover|on top of that)\b/gi, '.SPLIT.')
-    .replace(/\b(however|but then again|although|though|that said)\b/gi, '.SPLIT.')
-    .replace(/\b(finally|lastly|to conclude|in summary|to wrap up)\b/gi, '.SPLIT.')
-    .replace(/\b(I (?:also\s+)?(?:want|need|would like) (?:to\s+)?(?:mention|raise|highlight|flag|touch on))\b/gi, '.SPLIT.')
-    .replace(/\b(moving on|next item|next point|key point)\b/gi, '.SPLIT.')
-    .trim();
-
-  return marked
-    .split(/(?:\.SPLIT\.|(?<=[.!?])\s+(?=[A-Z])|\n)/)
-    .map(u => u.replace(/^\.SPLIT\.\s*/, '').trim())
-    .filter(u => u.length >= 12);
-}
-
-// ============================================================================
-// VALIDATION
-// ============================================================================
-
-function isFragment(text: string): boolean {
-  const t = text.trim();
-  if (t.length < 15) return true;
-  if (t.split(/\s+/).length < 3) return true;
-  if (/\b(that|which|who|when|where|what|how|if|because|since|although|while|before|after|during|in|on|at|to|for|with|by|about|into|through|under|again|further|once|and|but|or|so|then|also)\s*$/i.test(t)) return true;
-  if (/^(?:in one of|one of|some of|many of|most of|all of|none of|any of|each of|every one of)\b/i.test(t)) return true;
-  if (/\b(need|want|should|must|will|can|could|would|may|might|touch|discuss|review|check|improve|increase|decrease|start|begin|continue|finish|complete|is|are|was|were|be)\s*$/i.test(t)) return true;
-  return false;
-}
-
-function isNoise(text: string): boolean {
-  const t = text.trim();
-  if (t.length < 5) return true;
-  return /^(?:yes|no|yeah|nah|okay|ok|right|sure|fine|great|good|excellent|perfect|thanks|thank you|welcome|hello|hi|hey|any questions|does that make sense|is that clear|are we good|moving on|let's continue|next slide|\d+)[\s.,!?]*$/i.test(t);
-}
-
-// ============================================================================
-// ACTION EXTRACTION — STRICT
-// ============================================================================
-
-function extractAction(text: string): ActionItem | null {
-  const lower = text.toLowerCase();
-
-  const hasDirective = /\b(must|have to|got to|need to ensure|need to make sure|make sure|ensure that|don't be late|cannot be late|can't be late|be on time|arrive on time|arrive early|submit|complete by|finish by|send by|deliver by|follow up|reach out|sign off on|approve by)\b/.test(lower);
-  const hasNeedTo = /\b(you|team|staff|everyone|all staff)\b.{0,20}\b(need to|must|have to|should)\b/.test(lower);
-
-  if (!hasDirective && !hasNeedTo) return null;
-
-  let action = text;
-
-  action = action
-    .replace(/\s*,?\s*(?:if\s+(?:you|we)\s+(?:want|need|like|prefer|can|could)).*/i, '')
-    .replace(/\s*,?\s*or\s+(?:something|whatever|anything|etc).*/i, '')
-    .replace(/\s*(?:to\s+)?have\s+(?:a|an)\s+(?:coffee|tea|break|drink|chat|catch-?up|cigarette).*/i, '')
-    .replace(/\s*(?:and|or)\s+(?:have|get|grab|take)\s+(?:a|an)\s+.{1,25}$/i, '')
-    .replace(/\s*before\s+(?:received|arriving|you\s+start).*/i, '')
-    .trim();
-
-  action = action
-    .replace(/\bI\s+(?:need|want|would like)\s+(?:you\s+(?:guys\s+)?|everyone\s+)?to\b/gi, 'Team to')
-    .replace(/\byou\s+(?:guys|all|everyone)\s+(?:need|must|have)\s+to\b/gi, 'Team to')
-    .replace(/\byou\s+(?:need|must|have)\s+to\b/gi, 'Team to')
-    .replace(/\bwe\s+(?:need|must|have)\s+to\b/gi, 'To')
-    .replace(/\bmake\s+sure\s+(?:that\s+)?(?:you\s+(?:guys\s+)?)?/gi, 'Ensure ')
-    .replace(/\bensure\s+that\s+/gi, 'Ensure ')
-    .replace(/\bplease\s+/gi, '')
-    .replace(/\bjust\s+/gi, '');
-
-  // Normalise all punctuality / attendance phrases
-  if (/\b(?:on time|not be late|cannot be late|can't be late|don't be late|arrive|punctual|punctuality|early|late for\s+(?:your\s+)?shift|10 minutes earlier)\b/i.test(action)) {
-    const timeMatch = action.match(/(\d+)\s+minutes?\s+(?:early|earlier|before|prior)/i);
-    const timeNote = timeMatch ? ` — arrive ${timeMatch[1]} minutes before shift start` : '';
-    action = `Arrive punctually for all scheduled shifts${timeNote}`;
-  }
-
-  action = action
-    .replace(/\b(?:maybe|perhaps|possibly)\s+/gi, '')
-    .replace(/\s{2,}/g, ' ')
-    .replace(/^[,.\s]+|[,.\s]+$/g, '')
-    .trim();
-
-  if (action.length < 10 || action.length > 160) return null;
-
-  // Reject if it looks like a raw transcript opener
-  if (/^(?:and\s+welcome|hello|key point that|meeting key)/i.test(action)) return null;
-
-  action = toSentenceCase(action).replace(/[.!?;,]+$/, '');
-
-  let owner = 'Team';
-  if (/\b(?:I will|I'll|I shall|I am going to|I'm going to)\b/i.test(text)) owner = 'Manager';
-  else if (/\b(?:we will|we'll|we are going to|we're going to)\b/i.test(text)) owner = 'All';
-  else if (/\b(?:HR|human resources)\b/i.test(text)) owner = 'HR';
-
-  let deadline: string | undefined;
-  const deadlineMatch = text.match(/\b(?:by|before|due(?:\s+by)?|no later than)\s+(today|tomorrow|(?:next\s+)?(?:Monday|Tuesday|Wednesday|Thursday|Friday)|end of (?:the\s+)?(?:day|week|month)|EOB|EOD|COB)\b/i);
-  if (deadlineMatch) deadline = deadlineMatch[1];
-
-  return { id: crypto.randomUUID(), action, owner, deadline };
-}
-
-// ============================================================================
-// DECISION EXTRACTION
-// ============================================================================
-
-function extractDecision(text: string): string | null {
-  if (!/\b(?:decided|agreed|resolved|concluded|approved|confirmed|determined|established|signed off)\b/i.test(text)) return null;
-
-  let decision = text
-    .replace(/^(?:it\s+was|we|I|the\s+(?:team|group|committee))\s+(?:was\s+)?(?:decided|agreed|resolved|concluded|approved|confirmed|determined|established|signed off)(?:\s+that)?\s*/i, '')
-    .replace(/^(?:decision|agreement|resolution)\s*(?:is|was)\s*/i, '')
-    .trim();
-
-  if (decision.length < 8 || decision.length > 160) return null;
-
-  return toSentenceCase(decision.replace(/[.!?;,]+$/, '')) + '.';
-}
-
-// ============================================================================
-// DISCUSSION POINT EXTRACTION
-// ============================================================================
-
-function createDiscussionPoint(text: string): string | null {
-  if (text.length < 20) return null;
-
-  let point = text;
-
-  point = point
-    .replace(/^(?:and\s+)?(?:welcome\s+(?:to\s+(?:the\s+)?meeting)?|hello|hi)\s*/i, '')
-    .replace(/^(?:key point that needs to touch|key point is|point is)\s*/i, '')
-    .replace(/^(?:in one of|one of|some of|the fact that|a key point is)\s+/i, '');
-
-  point = point
-    .replace(/\b(?:we|I)\s+(?:need to touch on|touched on|discussed|talked about|went over|looked at|reviewed|addressed)\b/gi, 'Discussion covered')
-    .replace(/\b(?:we|I)\s+(?:noted|mentioned|raised|brought up|highlighted|flagged)\b/gi, 'Noted:')
-    .replace(/\b(?:we|I)\s+(?:explained|clarified|walked through|went through)\b/gi, 'Clarified:')
-    .replace(/\b(?:we|I)\s+(?:agreed|concurred|decided)\b/gi, 'Consensus reached:')
-    .replace(/\b(?:we|I)\s+(?:emphasized|stressed|underlined|underscored)\b/gi, 'Emphasised:')
-    .replace(/\b(?:we|I)\s+(?:identified|recognised|spotted)\b/gi, 'Identified:')
-    .replace(/\bimproving\s+sales\s+(?:in|for|at)\b/gi, 'Sales improvement discussed for')
-    .replace(/\bthis\s+is\s+(?:the\s+)?(?:most important|critical|key|main|primary|top)\s+(?:thing|priority|issue|concern)\b/gi, 'Identified as a top priority');
-
-  point = point
-    .replace(/\s+(?:this\s+is\s+(?:the\s+)?(?:most important|critical|key)).*/i, '')
-    .replace(/\s+if\s+(?:you|we)\s+(?:want|need|like).*/i, '')
-    .replace(/\s*(?:to\s+)?have\s+(?:a|an)\s+(?:coffee|tea|cigarette|break|drink).*/i, '')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
-
-  if (/^(?:and\s+welcome|hello|key point that|today is that)/i.test(point)) return null;
-  if (point.length < 15 || point.length > 180) return null;
-  if (/\b(that|which|who|when|where|what|how|if|because|for|to|in|on|at|with|by)\s*$/i.test(point)) return null;
-
-  point = toSentenceCase(point);
-  if (!/[.!?]$/.test(point)) point += '.';
-
-  return point;
-}
-
-// ============================================================================
-// FALLBACK — builds a clean summarised point from messy speech
-// ============================================================================
-
-function buildFallbackPoint(text: string): string | null {
-  let point = text;
-
-  point = point
-    .replace(/^(?:and\s+)?(?:welcome\s+(?:to\s+(?:the\s+)?meeting)?)[,.\s]*/i, '')
-    .replace(/^(?:hello|hi|hey)[,.\s]*/i, '')
-    .replace(/^(?:key point that needs to touch|key point is)[,.\s]*/i, '')
-    .replace(/^(?:today is that|the point is that|point is)[,.\s]*/i, '')
-    .trim();
-
-  if (point.length < 15) return null;
-
-  // Extract the most meaningful clause after "that" or "is"
-  const thatMatch = point.match(/\b(?:is\s+that|was\s+that|means\s+that)\s+(.{15,})/i);
-  if (thatMatch) point = thatMatch[1].trim();
-
-  point = point
-    .replace(/\s*(?:to\s+)?have\s+(?:a|an)\s+(?:coffee|tea|cigarette|break).*/i, '')
-    .replace(/\s+if\s+(?:you|we)\s+(?:want|need|like).*/i, '')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
-
-  if (point.length < 15 || point.length > 180) return null;
-
-  point = toSentenceCase(point);
-  if (!/[.!?]$/.test(point)) point += '.';
-
-  return point;
-}
-
-// ============================================================================
-// TOPIC DETECTION
-// ============================================================================
-
-function detectTopic(text: string): string {
-  const lower = text.toLowerCase();
-  if (/\b(?:sales|revenue|profit|target|client|customer|business development|pipeline|upsell|quota|baja)\b/.test(lower)) return 'Sales & Business Development';
-  if (/\b(?:shift|schedule|attendance|punctual|late|timekeeping|roster|on time|arrive|early|absence|rota)\b/.test(lower)) return 'Attendance & Scheduling';
-  if (/\b(?:performance|review|development|career|progress|appraisal|assessment|kpi|objective|goal)\b/.test(lower)) return 'Performance & Development';
-  if (/\b(?:budget|cost|financial|expense|spend|cash flow|invoice|money|margin|forecast)\b/.test(lower)) return 'Finance';
-  if (/\b(?:project|deadline|delivery|milestone|timeline|sprint|launch|rollout)\b/.test(lower)) return 'Projects & Delivery';
-  if (/\b(?:complaint|feedback|service|customer experience|guest|visitor|satisfaction)\b/.test(lower)) return 'Customer Service';
-  if (/\b(?:safety|compliance|risk|security|health|hazard|policy|gdpr|regulation|audit)\b/.test(lower)) return 'Safety & Compliance';
-  if (/\b(?:food|beverage|menu|kitchen|bar|drink|hospitality|venue|event)\b/.test(lower)) return 'Food & Beverage';
-  if (/\b(?:staff|hiring|recruitment|vacancy|turnover|onboard|induction|headcount)\b/.test(lower)) return 'Staffing & HR';
-  if (/\b(?:operation|process|procedure|system|workflow|tool|platform|software)\b/.test(lower)) return 'Operations & Technology';
-  if (/\b(?:marketing|brand|campaign|social media|advertising|promotion)\b/.test(lower)) return 'Marketing & Communications';
-  return 'General Matters';
-}
-
-// ============================================================================
-// CONSOLIDATION
-// ============================================================================
-
-function consolidateKeyPoints(keyPoints: Map<string, string[]>): Map<string, string[]> {
-  const consolidated = new Map<string, string[]>();
-  for (const [topic, points] of keyPoints) {
-    const unique: string[] = [];
-    for (const point of points) {
-      const isDup = unique.some(existing => calculateSimilarity(existing, point) > 0.65);
-      if (!isDup) unique.push(point);
-    }
-    if (unique.length > 0) consolidated.set(topic, unique);
-  }
-  return consolidated;
-}
-
-function mergeAndConsolidateActions(existing: ActionItem[], parsed: ActionItem[]): ActionItem[] {
-  const merged = [...existing];
-  for (const pa of parsed) {
-    const isDup = merged.some(
-      ex =>
-        calculateSimilarity(ex.action, pa.action) > 0.72 ||
-        ex.action.toLowerCase().startsWith(pa.action.toLowerCase().substring(0, 25))
-    );
-    if (!isDup) merged.push(pa);
-  }
-  return merged;
-}
-
-function calculateSimilarity(str1: string, str2: string): number {
-  const normalize = (s: string) => s.toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim();
-  const s1 = normalize(str1);
-  const s2 = normalize(str2);
-  if (s1 === s2) return 1.0;
-  const words1 = new Set(s1.split(/\s+/));
-  const words2 = new Set(s2.split(/\s+/));
-  const intersection = new Set([...words1].filter(x => words2.has(x)));
-  const union = new Set([...words1, ...words2]);
-  return union.size === 0 ? 0 : intersection.size / union.size;
-}
-
-// ============================================================================
-// FORMATTING
-// ============================================================================
-
-function formatAttendees(attendees: Attendee[], _type: MeetingType): string {
-  if (attendees.length === 0) return 'No attendees recorded.';
-  const rolePriority: Record<string, number> = {
-    Chair: 1, Investigator: 1, Manager: 2, HR: 3,
-    Employee: 4, 'Note-taker': 5, Witness: 6, Companion: 7,
-  };
-  return [...attendees]
-    .sort((a, b) => (rolePriority[a.role] || 99) - (rolePriority[b.role] || 99))
-    .map(a => `- **${a.name}** – ${a.role}`)
-    .join('\n');
-}
-
-function formatKeyPoints(keyPoints: Map<string, string[]>): string {
-  if (keyPoints.size === 0) return 'No discussion points recorded.';
-  return Array.from(keyPoints.entries())
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .filter(([, points]) => points.length > 0)
-    .map(([topic, points]) => `**${topic}**\n${points.map(p => `- ${p}`).join('\n')}`)
-    .join('\n\n');
-}
-
-function formatDecisions(decisions: string[]): string {
-  if (decisions.length === 0) return 'No formal decisions recorded.';
-  return decisions.map(d => `- ${d}`).join('\n');
-}
-
-function formatActionsTable(actions: ActionItem[]): string {
-  if (actions.length === 0) {
-    return '| Action | Owner | Deadline |\n|:-------|:-----:|:---------|\n| No actions recorded | - | - |';
-  }
-  const rows = actions.map(a => {
-    let action = a.action.replace(/\|/g, '/');
-    if (action.length > 70) action = action.substring(0, 67) + '...';
-    return `| ${action} | ${a.owner} | ${a.deadline || 'TBC'} |`;
-  });
-  return ['| Action | Owner | Deadline |', '|:-------|:-----:|:---------|', ...rows].join('\n');
-}
-
-function formatNextSteps(type: MeetingType, actions: ActionItem[]): string {
-  const steps: string[] = [];
-  if (actions.length > 0) {
-    steps.push(`- Complete ${actions.length} action item${actions.length !== 1 ? 's' : ''} listed above`);
-  }
-  if (type === 'disciplinary') {
-    steps.push('- HR to process formal documentation within 48 hours');
-    steps.push('- Written outcome to be issued within 5 working days');
-    steps.push('- Employee rights to appeal to be confirmed in writing');
-  } else if (type === 'investigation') {
-    steps.push('- Investigation findings to be compiled');
-    steps.push('- Decision on next steps within 10 working days');
-  } else if (type === '1:1') {
-    steps.push('- Next 1:1 to be scheduled per regular cadence');
-    steps.push('- Development actions to be reviewed at next session');
-  } else if (type === 'team') {
-    steps.push('- Action progress to be reviewed at next team meeting');
-  }
-  steps.push('- Minutes to be circulated to all attendees within 24 hours');
-  return steps.join('\n');
-}
-
-function generateExecutiveSummary(
-  keyPoints: Map<string, string[]>,
-  actions: ActionItem[],
-  title: string,
-  type: MeetingType
-): string {
-  const topicCount = keyPoints.size;
-  const actionCount = actions.length;
-  const topics = Array.from(keyPoints.keys()).join(', ');
-
-  let summary = `**${title}** – `;
-  if (topicCount > 0) {
-    summary += `${topicCount} topic area${topicCount !== 1 ? 's' : ''} covered`;
-    if (topics) summary += ` (${topics})`;
-  } else {
-    summary += 'Meeting held';
-  }
-  summary += actionCount > 0
-    ? `. ${actionCount} action item${actionCount !== 1 ? 's' : ''} assigned.`
-    : '. No actions assigned.';
-
-  if (type === 'disciplinary') summary += ' Formal disciplinary hearing — HR records apply.';
-  if (type === 'investigation') summary += ' Formal investigation meeting — HR records apply.';
-
-  return summary;
-}
-
-function generateHRAddendum(type: MeetingType, consentConfirmed: boolean): string {
-  if (type === 'disciplinary') {
-    return `
-
-## HR Documentation
-
-**Allegations:** Presented to employee and response recorded.
-**Evidence:** Reviewed and acknowledged by employee.
-**Mitigation:** ${consentConfirmed ? 'Employee provided response and mitigation.' : 'Pending employee response.'}
-**Outcome:** To be confirmed in writing within 5 working days.
-**Appeal Rights:** Employee has 5 working days from written confirmation date to lodge an appeal.`;
-  }
-  if (type === 'investigation') {
-    return `
-
-## HR Documentation
-
-**Investigation Scope:** Parameters explained to employee.
-**Evidence:** Supporting documents reviewed during meeting.
-**Employee Response:** ${consentConfirmed ? 'Cooperation provided.' : 'Pending.'}
-**Next Steps:** Findings to be compiled; outcome communicated within 10 working days.`;
-  }
-  return '';
+  return actions;
 }
 
 // ============================================================================
 // UTILITIES
 // ============================================================================
-
-function toSentenceCase(str: string): string {
-  if (!str) return str;
-  return str.charAt(0).toUpperCase() + str.slice(1);
-}
 
 function formatDate(dateStr: string): string {
   try {
@@ -550,27 +255,4 @@ function getConfidentialityLevel(type: MeetingType): string {
   if (type === 'disciplinary' || type === 'investigation') return 'CONFIDENTIAL - HR Records';
   if (type === '1:1') return 'CONFIDENTIAL - Management';
   return 'Internal';
-}
-
-// ============================================================================
-// EXTRACTION FROM SAVED MINUTES TEXT
-// ============================================================================
-
-export function extractActionsFromMinutes(minutesText: string): ActionItem[] {
-  const actions: ActionItem[] = [];
-  const match = minutesText.match(
-    /\|\s*Action\s*\|\s*Owner\s*\|\s*Deadline\s*\|\n\|[-:| ]+\|\n([\s\S]*?)(?=\n##|\n---|$)/i
-  );
-  if (match) {
-    const lines = match[1]
-      .split('\n')
-      .filter(l => l.startsWith('|') && !/Action\s*\|/i.test(l))
-      .map(l => l.split('|').map(p => p.trim()).filter(Boolean));
-    for (const parts of lines) {
-      if (parts.length >= 2 && !parts[0].includes('No actions')) {
-        actions.push({ id: crypto.randomUUID(), action: parts[0], owner: parts[1], deadline: parts[2] });
-      }
-    }
-  }
-  return actions;
 }

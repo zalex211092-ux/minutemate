@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Lock, Eye, EyeOff } from 'lucide-react';
 
-const APP_PASSWORD = 'minutemate2026';
+const APP_PASSWORD = '3142';
 const STORAGE_KEY = 'mm_auth';
 
 interface PasswordGateProps {

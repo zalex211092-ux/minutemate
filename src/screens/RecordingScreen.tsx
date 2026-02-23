@@ -54,9 +54,7 @@ export function RecordingScreen({ meeting, onUpdateMeeting }: RecordingScreenPro
     stopRecording();
   };
 
-  const handleContinue = () => {
-  console.log('Continue clicked');
-  
+   const handleContinue = () => {
   const updated = {
     ...meeting,
     transcriptText: fullTranscript,
@@ -64,10 +62,13 @@ export function RecordingScreen({ meeting, onUpdateMeeting }: RecordingScreenPro
     consentConfirmed: consentChecked,
     updatedAt: new Date().toISOString(),
   };
+  
+  // Save to localStorage first
+  localStorage.setItem('currentMeeting', JSON.stringify(updated));
   onUpdateMeeting(updated);
   
-  // Force navigation with page reload
-  window.location.href = '/transcript';
+  // Use React Router navigation
+  navigate('/transcript');
 };
  
   const handleAddMarker = (type: RecordingMarker['type']) => {

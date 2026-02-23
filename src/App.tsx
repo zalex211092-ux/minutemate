@@ -9,6 +9,7 @@ import { HistoryScreen } from './screens/HistoryScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
 import { Layout } from './components/Layout';
 import type { Meeting } from './types';
+import { PasswordGate } from './components/PasswordGate';
 
 function App() {
   const { meetings, addMeeting, updateMeeting, deleteMeeting, getMeetingById, searchMeetings } = useMeetings();
@@ -88,6 +89,7 @@ function App() {
   };
 
   return (
+    <PasswordGate>
     <Router>
       <Layout>
         <Routes>
@@ -175,6 +177,7 @@ function App() {
         </Routes>
       </Layout>
     </Router>
+    </PasswordGate>
   );
 }
 

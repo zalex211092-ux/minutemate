@@ -54,10 +54,8 @@ export function RecordingScreen({ meeting, onUpdateMeeting }: RecordingScreenPro
     stopRecording();
   };
 
- const handleContinue = () => {
+  const handleContinue = () => {
   console.log('Continue clicked');
-  console.log('Full transcript:', fullTranscript);
-  console.log('Markers:', markers);
   
   const updated = {
     ...meeting,
@@ -66,6 +64,11 @@ export function RecordingScreen({ meeting, onUpdateMeeting }: RecordingScreenPro
     consentConfirmed: consentChecked,
     updatedAt: new Date().toISOString(),
   };
+  onUpdateMeeting(updated);
+  
+  // Force navigation with page reload
+  window.location.href = '/transcript';
+};
   onUpdateMeeting(updated);
   console.log('Meeting updated, navigating...');
   

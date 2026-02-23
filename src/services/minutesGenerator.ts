@@ -1,8 +1,6 @@
 import type { Meeting } from '../types';
 
 export async function generateMinutes(meeting: Meeting): Promise<string> {
-  // For now, we'll generate structured minutes without an API call
-  // In a production app, this would call an LLM API
   return generateStructuredMinutes(meeting);
 }
 
@@ -26,23 +24,8 @@ ${caseRef ? `- **Case Reference:** ${caseRef}` : ''}
 ${attendees.length > 0 ? attendees.map(a => `  - ${a.name} (${a.role})`).join('\n') : '  - Not recorded'}
 
 ## 3. Key Points Discussed
-`;
 
-  if (transcriptText && transcriptText.trim()) {
-    // Extract key points from transcript
-    const sentences = transcriptText.split(/[.!?]+/).filter((s: string) => s.trim().length > 10);
-    const keyPoints = sentences.slice(0, Math.min(8, sentences.length));
-    
-    if (keyPoints.length > 0) {
-      minutes += keyPoints.map((s: string) => `- ${s.trim()}`).join('\n');
-    } else {
-      minutes += '- Discussion took place as per transcript';
-    }
-  } else {
-    minutes += '- No transcript available';
-  }
-
-  minutes += `
+${formatTranscriptToMinutes(transcriptText, attendees)}
 
 ## 4. Decisions Made
 `;
@@ -150,6 +133,94 @@ ${attendees.length > 0 ? attendees.map(a => `  - ${a.name} (${a.role})`).join('\
 *Confidential - HR Records*`;
 
   return minutes;
+}
+
+function formatTranscriptToMinutes(transcript: string | undefined, attendees: Meeting['attendees']): string {
+  if (!transcript || !transcript.trim()) {
+    return '- Discussion took place (no transcript recorded)';
+  }
+
+  // Clean up the transcript
+  let cleaned = transcript
+    // Remove filler words and false starts
+    .replace(/\b(um|uh|ah|er|hm|like|you know|I mean|sort of|kind of)\b/gi, '')
+    // Remove stutters and repetitions (e.g., "the the the" → "the")
+    .replace(/\b(\w+)\s+\1\s+\1+\b/gi, '$1')
+    .replace(/\b(\w+)\s+\1\b/gi, '$1')
+    // Fix multiple spaces
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  // Split into sentences intelligently
+  const sentences = cleaned
+    .split(/[.!?]+/)
+    .map(s => s.trim())
+    .filter(s => s.length > 5 && s.split(' ').length > 2);
+
+  if (sentences.length === 0) {
+    return '- Discussion took place regarding the matters at hand';
+  }
+
+  // Group into thematic points (simple approach)
+  const points: string[] = [];
+  let currentPoint = '';
+  
+  for (let i = 0; i < sentences.length; i++) {
+    const sentence = sentences[i];
+    
+    // Start a new point if:
+    // 1. Current point is getting long (30+ words)
+    // 2. Sentence starts with transition words (indicating new topic)
+    const isNewTopic = /^(however|additionally|furthermore|moreover|regarding|concerning|alternatively|separately|moving on|next|then)/i.test(sentence);
+    const isLongEnough = currentPoint.split(' ').length > 25;
+    
+    if ((isNewTopic || isLongEnough) && currentPoint) {
+      points.push(currentPoint);
+      currentPoint = sentence;
+    } else {
+      currentPoint += (currentPoint ? ' ' : '') + sentence;
+    }
+  }
+  
+  if (currentPoint) points.push(currentPoint);
+
+  // Convert to proper meeting minutes format
+  return points.map((point) => {
+    // Capitalize first letter
+    point = point.charAt(0).toUpperCase() + point.slice(1);
+    
+    // Add period if missing
+    if (!/[.!?]$/.test(point)) point += '.';
+    
+    // Convert present tense to past tense for minutes style
+    point = convertToPastTense(point);
+    
+    return `- ${point}`;
+  }).join('\n');
+}
+
+function convertToPastTense(text: string): string {
+  // Simple conversions for meeting minutes style
+  return text
+    // "We are discussing" → "Discussed"
+    .replace(/\bwe are discussing\b/gi, 'discussed')
+    // "We discussed" → "Discussed" (already past tense)
+    .replace(/\bwe discussed\b/gi, 'discussed')
+    // "I propose" → "It was proposed"
+    .replace(/\bi propose\b/gi, 'it was proposed')
+    // "We need to" → "the need to"
+    .replace(/\bwe need to\b/gi, 'the need to')
+    // "We should" → "It was suggested that"
+    .replace(/\bwe should\b/gi, 'it was suggested that')
+    // "Let's" → "It was suggested to"
+    .replace(/\blet's\b/gi, 'it was suggested to')
+    // "We will" → "It was agreed that"
+    .replace(/\bwe will\b/gi, 'it was agreed that')
+    // "I suggest" → "It was suggested"
+    .replace(/\bi suggest\b/gi, 'it was suggested')
+    // "We agreed" → "It was agreed"
+    .replace(/\bwe agreed\b/gi, 'it was agreed')
+    .trim();
 }
 
 export function extractActionsFromMinutes(minutesText: string): Meeting['actions'] {

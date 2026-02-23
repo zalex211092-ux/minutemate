@@ -129,19 +129,35 @@ export function useSettings() {
 }
 
 export function useCurrentMeeting() {
-  const [currentMeeting, setCurrentMeeting] = useState<Meeting | null>(null);
-  const [isLoaded, setIsLoaded] = useState(false);
-
-  useEffect(() => {
-    const stored = localStorage.getItem(CURRENT_MEETING_KEY);
-    if (stored) {
-      try {
-        const parsed = JSON.parse(stored);
-        setCurrentMeeting(parsed);
-      } catch (e) {
-        console.error('Failed to parse current meeting:', e);
-      }
+  // Initialize from localStorage immediately to prevent null state after navigation
+  const [currentMeeting, setCurrentMeeting] = useState<Meeting | null>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('currentMeeting');
+      return saved ? JSON.parse(saved) : null;
     }
+    return null;
+  });
+
+  // Keep localStorage in sync with state changes
+  useEffect(() => {
+    if (currentMeeting) {
+      localStorage.setItem('currentMeeting', JSON.stringify(currentMeeting));
+    } else {
+      localStorage.removeItem('currentMeeting');
+    }
+  }, [currentMeeting]);
+
+  const clearCurrentMeeting = () => {
+    setCurrentMeeting(null);
+    localStorage.removeItem('currentMeeting');
+  };
+
+  return {
+    currentMeeting,
+    setCurrentMeeting,
+    clearCurrentMeeting
+  };
+}
     setIsLoaded(true);
   }, []);
 

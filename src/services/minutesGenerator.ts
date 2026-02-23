@@ -8,385 +8,314 @@ interface ParsedContent {
   keyPoints: { topic: string; points: string[] }[];
   decisions: string[];
   transcriptActions: ActionItem[];
-  summary: string;
 }
 
 function generateStructuredMinutes(meeting: Meeting): string {
   const { type, title, date, startTime, location, caseRef, attendees, transcriptText, actions: existingActions } = meeting;
   const totalAttendees = attendees.length;
 
-  // Parse transcript for content
-  const { keyPoints, decisions, transcriptActions, summary } = parseTranscript(transcriptText, title, type);
-
-  // Merge existing actions with parsed ones (existing take priority)
+  const { keyPoints, decisions, transcriptActions } = parseTranscript(transcriptText);
+  
+  // Merge existing actions with parsed ones
   const allActions = mergeActions(existingActions, transcriptActions);
-
-  // Build sections
-  const attendeesSection = formatAttendees(attendees);
+  
+  // Format sections
+  const attendeesSection = formatAttendees(attendees, type);
   const keyPointsSection = formatKeyPoints(keyPoints);
   const decisionsSection = formatDecisions(decisions);
   const actionsTable = formatActionsTable(allActions);
-  const nextSteps = formatNextSteps(type, allActions, decisions.length);
-  const hrAddendum = (type === 'disciplinary' || type === 'investigation') ? generateHRAddendum(meeting) : '';
+  const nextSteps = formatNextSteps(type, allActions);
 
   return `# ${formatMeetingTypeHeader(type)} MINUTES
 
----
+${generateExecutiveSummary(keyPoints, allActions, title, type)}
 
-## Executive Summary
-${summary}
+## Meeting Information
 
----
-
-## Meeting Details
-
-| Attribute | Information |
-|:----------|:------------|
+| Field | Details |
+|:------|:--------|
 | **Date** | ${formatDate(date)} |
 | **Time** | ${startTime} |
-| **Type** | ${MEETING_TYPE_LABELS[type]} |
+| **Type** | ${formatMeetingType(type)} |
 | ${type === 'disciplinary' || type === 'investigation' ? '**Location**' : '**Venue**'} | ${location || 'Not stated'} |
 | **Subject** | ${title} |
-${caseRef ? `| **Case Reference** | ${caseRef} |` : ''}
-${(type === 'disciplinary' || type === 'investigation') ? `| **Consent** | ${meeting.consentConfirmed ? 'Confirmed' : 'Pending'} |` : ''}
-
----
+${caseRef ? `| **Case Ref** | ${caseRef} |` : ''}
 
 ## Attendees (${totalAttendees})
 
 ${attendeesSection}
 
----
-
-## Key Points Discussed
+## Discussion Summary
 
 ${keyPointsSection}
 
----
-
-## Decisions Made
+## Decisions
 
 ${decisionsSection}
 
----
-
-## Actions Agreed (${allActions.length})
+## Action Items (${allActions.length})
 
 ${actionsTable}
 
----
-
-## Next Steps & Follow-up
+## Follow-up
 
 ${nextSteps}
+${(type === 'disciplinary' || type === 'investigation') ? generateHRAddendum(type, meeting.consentConfirmed) : ''}
 
-${hrAddendum}
 ---
-
-*Document prepared by MinuteMate*  
-*Classification: ${getConfidentialityLevel(type)}*  
-*Generated: ${new Date().toLocaleDateString('en-GB')} at ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}*
+*Document prepared by MinuteMate | ${getConfidentialityLevel(type)} | Generated: ${new Date().toLocaleDateString('en-GB')}*
 `;
 }
 
-function parseTranscript(transcript: string | undefined, title: string, type: MeetingType): ParsedContent {
+function parseTranscript(transcript: string | undefined): ParsedContent {
   const keyPoints: Map<string, string[]> = new Map();
   const decisions: string[] = [];
-  const transcriptActions: ActionItem[] = [];
-  
+  const actions: ActionItem[] = [];
+
   if (!transcript || !transcript.trim()) {
-    return { 
-      keyPoints: new Map(), 
-      decisions: [], 
-      transcriptActions: [], 
-      summary: `_Meeting held regarding: ${title}. No transcript available for analysis._` 
-    };
+    return { keyPoints: new Map(), decisions, transcriptActions: actions };
   }
 
-  // Clean transcript
-  let cleaned = transcript
-    .replace(/\b(um|uh|ah|er|hm|like|you know|I mean|sort of|kind of|basically|literally|actually|honestly|right|okay|ok)\b/gi, '')
-    .replace(/\b(\w+)\s+\1\s+\1+\b/gi, '$1')
-    .replace(/\b(\w+)\s+\1\b/gi, '$1')
+  // STEP 1: Aggressive cleaning
+  let text = transcript
+    .replace(/\b(um|uh|ah|er|hm|like|you know|I mean|sort of|kind of|basically|literally|actually|honestly|right|okay|ok|so|well|now|yes|no|yeah)\b/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 
-  // Remove meeting management phrases
-  cleaned = cleaned
-    .replace(/^(?:hello|hi|hey|welcome|good morning|good afternoon|good evening)[,.\s]+/i, '')
-    .replace(/\bthank\s+you\s+(?:for\s+)?(?:coming|joining|attending)\b/gi, '')
-    .replace(/\b(?:let's|let us)\s+(?:begin|start|get started|move on|continue)\b/gi, '')
-    .replace(/\b(?:that'?s\s+all|let'?s\s+wrap\s+up|we'?ll\s+stop\s+there|good\s+meeting)\b/gi, '')
-    .replace(/\b(?:does\s+that\s+make\s+sense|any\s+questions|is\s+that\s+clear)\b/gi, '');
+  // STEP 2: Remove all meeting management phrases completely
+  const noisePhrases = [
+    /^(?:hello|hi|hey|welcome|good morning|good afternoon|good evening)[,.\s]+/i,
+    /thank\s+you\s+(?:for\s+)?(?:coming|joining|attending)[,.\s]+/gi,
+    /(?:let's|let us)\s+(?:begin|start|get started|move on|continue)/gi,
+    /that'?s\s+all\s+for\s+now/gi,
+    /let'?s\s+wrap\s+up/gi,
+    /(?:does\s+that\s+make\s+sense|any\s+questions|is\s+that\s+clear)/gi,
+    /(?:great|good|excellent|perfect|wonderful|nice)\s+(?:job|work)/gi,
+    /welcome\s+to\s+the\s+meeting/gi,
+    /thank\s+you\s+for\s+coming\s+in/gi,
+  ];
 
-  // Split into segments
-  const segments = splitIntoSegments(cleaned);
+  noisePhrases.forEach(pattern => {
+    text = text.replace(pattern, ' ');
+  });
 
-  // Classify each segment
-  for (const segment of segments) {
-    if (segment.length < 15 || isAdministrativeNoise(segment)) continue;
+  text = text.replace(/\s+/g, ' ').trim();
 
-    // Check for decisions first
-    const decision = extractDecision(segment);
+  // STEP 3: Split into clean sentences (handle missing punctuation)
+  text = text
+    .replace(/([a-z])([A-Z])/g, '$1. $2')
+    .replace(/\s+also\s+/g, '. Also ')
+    .replace(/\s+additionally\s+/g, '. Additionally ')
+    .replace(/\s+however\s+/g, '. However ')
+    .replace(/\s+but\s+/g, '. But ')
+    .replace(/\s+and\s+I\s+want/gi, '. I want')
+    .replace(/\s+and\s+also/gi, '. Also');
+
+  const sentences = text
+    .split(/[.!?]+/)
+    .map(s => s.trim())
+    .filter(s => s.length > 15 && !isNoiseOnly(s));
+
+  // STEP 4: Process each sentence
+  for (const sentence of sentences) {
+    // Try extract action first (priority)
+    const action = extractAction(sentence);
+    if (action) {
+      actions.push(action);
+      continue;
+    }
+
+    // Try extract decision
+    const decision = extractDecision(sentence);
     if (decision) {
       decisions.push(decision);
       continue;
     }
 
-    // Check for specific actions
-    const action = extractAction(segment);
-    if (action) {
-      transcriptActions.push(action);
-      continue;
-    }
-
-    // Remaining content = key points
-    const topic = detectTopic(segment);
-    const polished = polishToKeyPoint(segment, topic);
-    
-    if (polished) {
+    // Must be a discussion point - clean and categorize
+    const cleaned = cleanDiscussionPoint(sentence);
+    if (cleaned && cleaned.length > 20) {
+      const topic = detectTopic(cleaned);
       if (!keyPoints.has(topic)) {
         keyPoints.set(topic, []);
       }
-      // Avoid duplicates
-      if (!keyPoints.get(topic)!.some(p => p.toLowerCase() === polished.toLowerCase())) {
-        keyPoints.get(topic)!.push(polished);
+      
+      // Avoid duplicates/similar points
+      const existing = keyPoints.get(topic)!;
+      const isSimilar = existing.some(p => 
+        calculateSimilarity(p.toLowerCase(), cleaned.toLowerCase()) > 0.7
+      );
+      
+      if (!isSimilar) {
+        existing.push(cleaned);
       }
     }
   }
 
-  const summary = generateExecutiveSummary(keyPoints, decisions, transcriptActions, title, type);
-
-  return { keyPoints, decisions, transcriptActions, summary };
+  return { keyPoints, decisions, transcriptActions: actions };
 }
 
-function splitIntoSegments(text: string): string[] {
-  // Normalize sentence boundaries
-  text = text
-    .replace(/([a-z])([A-Z])/g, '$1. $2')
-    .replace(/\s+(?:and then|next|also|additionally|furthermore|moreover|however)\s+/gi, '. $1 ')
-    .replace(/,/g, ', ')
-    .replace(/\s+/g, ' ');
-
-  return text
-    .split(/[.!?]+/)
-    .map(s => s.trim())
-    .filter(s => s.length > 10);
-}
-
-function isAdministrativeNoise(segment: string): boolean {
-  const noise = [
-    /^(?:welcome|hello|hi|hey|thanks|thank you|okay|ok|right|so|well|now|yes|no|yeah)/i,
-    /^(?:moving on|next item|let's continue|as I was saying|before we start)/i,
-    /^(?:any questions|does that make sense|is that clear|are we good)/i,
-    /^(?:great|good|excellent|perfect|wonderful|nice)\s+(?:job|work|meeting|stuff)/i,
-    /^(?:let's|let us)\s+(?:move on|continue|start)/i,
+function isNoiseOnly(text: string): boolean {
+  const noisePatterns = [
+    /^(?:welcome|hello|hi|hey|thanks|okay|ok|right|so|well)/i,
+    /^(?:moving on|next|let's continue)/i,
+    /^(?:any questions|does that make sense)/i,
+    /^\d+$/, // Just numbers
   ];
-  return noise.some(pattern => pattern.test(segment));
+  return noisePatterns.some(p => p.test(text));
 }
 
-function detectTopic(segment: string): string {
-  const lower = segment.toLowerCase();
+function extractAction(sentence: string): ActionItem | null {
+  const lower = sentence.toLowerCase();
   
-  // HR/People topics
-  if (/\b(shift|roster|schedule|punctuality|attendance|timekeeping|late|absent|clock|annual leave|holiday|sick leave)\b/.test(lower)) 
-    return 'Attendance & Scheduling';
-  if (/\b(hiring|recruitment|interview|job offer|probation|training|performance|review|appraisal|capability|grievance)\b/.test(lower)) 
-    return 'Human Resources';
-  if (/\b(disciplinary|warning|sanction|misconduct|performance issue|behavior)\b/.test(lower)) 
-    return 'Disciplinary & Conduct';
-    
-  // Business topics  
-  if (/\b(sales|revenue|profit|growth|target|forecast|pipeline|client|customer|lead|conversion)\b/.test(lower)) 
-    return 'Sales & Business Development';
-  if (/\b(budget|cost|expense|financial|spend|investment|margin|cash flow|invoice|payment)\b/.test(lower)) 
-    return 'Finance & Budget';
-  if (/\b(complaint|feedback|review|rating|service quality|guest experience|satisfaction|NPS)\b/.test(lower)) 
-    return 'Customer Experience';
-  if (/\b(project|deadline|milestone|delivery|timeline|completion|phase|scope|resource)\b/.test(lower)) 
-    return 'Projects & Delivery';
-  if (/\b(safety|health|security|risk|compliance|regulation|audit|inspection|GDPR|data protection)\b/.test(lower)) 
-    return 'Safety & Compliance';
-  if (/\b(marketing|promotion|campaign|advertising|social media|brand|content|SEO)\b/.test(lower)) 
-    return 'Marketing & Communications';
-  if (/\b(supplier|vendor|inventory|stock|order|supply chain|logistics|procurement)\b/.test(lower)) 
-    return 'Operations & Supply Chain';
-  if (/\b(system|software|website|app|technical|IT|digital|automation|platform|tool)\b/.test(lower)) 
-    return 'Technology & Systems';
-  if (/\b(strategy|objective|goal|mission|vision|value|culture|expansion|restructure)\b/.test(lower)) 
-    return 'Strategy & Planning';
-    
-  return 'General Discussion';
-}
+  // Must contain clear directive language
+  const hasDirective = /\b(need|want|must|require|ensure|make sure|complete|submit|review|send|prepare|update|check|arrange|organize)\b/.test(lower);
+  const hasOwner = /\b(you|we|I|team|staff|manager)\b/.test(lower);
+  
+  if (!hasDirective || !hasOwner) return null;
 
-function extractDecision(segment: string): string | null {
-  const patterns = [
-    /\b(?:it was|we have|I have|the panel has|management has)?\s*(?:decided|agreed|resolved|concluded|determined|approved|confirmed|authorised|authorized)\s+(?:that|to)?\b/i,
-    /\b(?:decision|resolution|agreement)\s+(?:is|was|has been)\s+(?:made|reached|taken)\b/i,
-  ];
+  // Don't treat general discussion as actions
+  if (/discuss|talk about|went over|looked at/.test(lower) && !/\b(will|must|need to|by|deadline)\b/.test(lower)) {
+    return null;
+  }
 
-  if (!patterns.some(p => p.test(segment))) return null;
-
-  let decision = segment
-    .replace(/\b(?:it was|we have|I have|the panel has|management has)?\s*(?:decided|agreed|resolved|concluded|determined|approved|confirmed|authorised|authorized)\s+(?:that|to)?\s*/i, '')
-    .replace(/\b(?:the|a)\s+(?:decision|resolution|agreement)\s+(?:is|was|has been)\s+(?:made|reached|taken)\s*/i, '')
+  // Extract meaning, not exact words
+  let actionText = sentence
+    .replace(/\bI want you guys to\b/gi, 'Team to')
+    .replace(/\bI need you to\b/gi, '')
+    .replace(/\bwe need to\b/gi, 'To')
+    .replace(/\byou need to\b/gi, '')
+    .replace(/\bmake sure you\b/gi, '')
+    .replace(/\b(maybe|perhaps|possibly|might)\b/gi, '') // Remove uncertainty
+    .replace(/\b(or something|or whatever|etc)\b/gi, '')
+    .replace(/\s+(?:of|for)\s+(?:the|a|an)\s+(?:ocean|coffee|break|minute)/gi, '') // Remove nonsense endings
     .trim();
 
-  if (decision.length < 10) return null;
-  
-  decision = decision.charAt(0).toUpperCase() + decision.slice(1);
-  if (!/[.!?]$/.test(decision)) decision += '.';
-  
-  return decision;
-}
-
-function extractAction(segment: string): ActionItem | null {
-  const lower = segment.toLowerCase();
-  
-  // Must have clear ownership or deadline to be an action (not just a discussion point)
-  const hasCommitment = /\b(will|shall|must|need to|have to|required to|ensure|make sure)\b/.test(lower);
-  const hasOwner = /\b(?:by|for)\s+[A-Z][a-z]+|[A-Z][a-z]+ will\b/.test(segment);
-  const hasDeadline = /\b(?:by|before|due|deadline)\s+(?:tomorrow|today|next week|Monday|Tuesday|Wednesday|Thursday|Friday|the \d+|end of|EOB|EOD|COB|\d{1,2}\/\d{1,2}\/\d{2,4})\b/i.test(segment);
-  
-  if (!hasCommitment || (!hasOwner && !hasDeadline)) return null;
-
-  // Extract owner
-  let owner = 'Team';
-  const ownerMatch = segment.match(/\b(?:by|for|assigned to)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b/);
-  if (ownerMatch) owner = ownerMatch[1];
-  else if (/\b(I will|I'll)\b/i.test(segment)) owner = 'Manager';
-  
-  // Extract deadline
-  let deadline: string | undefined;
-  const deadlineMatch = segment.match(/\b(?:by|before|due)\s+(tomorrow|today|next week|Monday|Tuesday|Wednesday|Thursday|Friday|the \d+.*?|end of.*?|EOB|EOD|COB|\d{1,2}\/\d{1,2}\/\d{2,4})/i);
-  if (deadlineMatch) deadline = deadlineMatch[1];
-
-  // Clean action text
-  let actionText = segment
-    .replace(/\b(?:I want you to|I need you to|please make sure|ensure that|we will|I will)\b/gi, '')
-    .replace(/\b(?:by|for)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\b/g, '')
-    .replace(/\b(?:by|before|due)\s+(?:tomorrow|today|next week|.*?)\b/gi, '')
-    .trim();
-
-  // Professionalize
+  // Professionalize common phrases
   actionText = actionText
     .replace(/\bdon'?t\s+be\s+late\b/gi, 'maintain punctual arrival')
-    .replace(/\bbe\s+on\s+time\b/gi, 'maintain punctuality')
+    .replace(/\bbe\s+on\s+time\b/gi, 'arrive punctually')
     .replace(/\bget\s+this\s+done\b/gi, 'complete')
     .replace(/\bsort\s+this\s+out\b/gi, 'resolve');
 
-  if (actionText.length < 10) return null;
-  
-  actionText = actionText.charAt(0).toUpperCase() + actionText.slice(1).replace(/[.!?;,]+$/, '');
+  if (actionText.length < 15 || actionText.length > 100) return null;
+
+  // Determine owner
+  let owner = 'Team';
+  if (/\bI\s+will|I'll\b/i.test(sentence)) owner = 'Manager';
+  else if (/\byou\s+will|you'll\b/i.test(sentence)) owner = 'Employee';
+  else if (/\bwe\s+will|we'll\b/i.test(sentence)) owner = 'All';
+
+  // Extract deadline if present
+  let deadline: string | undefined;
+  const deadlineMatch = sentence.match(/\b(?:by|before|due)\s+(tomorrow|today|next week|Monday|Tuesday|Wednesday|Thursday|Friday|(?:\d{1,2}(?:st|nd|rd|th)?\s+)?(?:January|February|March|April|May|June|July|August|September|October|November|December)|the\s+end\s+of|EOB|EOD)\b/i);
+  if (deadlineMatch) deadline = deadlineMatch[1];
 
   return {
     id: crypto.randomUUID(),
-    action: actionText,
+    action: actionText.charAt(0).toUpperCase() + actionText.slice(1).replace(/[.!?;,]+$/, ''),
     owner,
     deadline
   };
 }
 
-function polishToKeyPoint(segment: string, topic: string): string | null {
-  let polished = segment;
-
-  // Convert casual to professional
-  const conversions: [RegExp, string][] = [
-    [/\b(want|would like|need)\s+(?:you|the team|staff|everyone)\s+to\b/gi, 'Required:'],
-    [/\bI want you guys to\b/gi, 'Team instructed to'],
-    [/\bwe discussed\b/gi, 'Discussion covered'],
-    [/\bwe talked about\b/gi, 'Reviewed'],
-    [/\bwe went over\b/gi, 'Examined'],
-    [/\bwe looked at\b/gi, 'Analysed'],
-    [/\bwe noted\b/gi, 'Noted'],
-    [/\bI mentioned\b/gi, 'Raised'],
-    [/\bI explained\b/gi, 'Outlined'],
-    [/\bI suggested\b/gi, 'Proposed'],
-    [/\bwe agreed\b/gi, 'Consensus reached'],
-    [/\bwe need to improve\b/gi, 'Improvement required:'],
-    [/\bgoing forward\b/gi, 'Moving forward'],
-    [/\bjust to remind you\b/gi, 'Reminder:'],
-    [/\bas you know\b/gi, ''],
-    [/\bI think\b/gi, 'It was considered that'],
-    [/\bI feel\b/gi, 'It was noted that'],
-    [/\bwe have to\b/gi, 'Required:'],
-    [/\bwe should\b/gi, 'Recommended:'],
-  ];
-
-  for (const [pattern, replacement] of conversions) {
-    polished = polished.replace(pattern, replacement);
+function extractDecision(sentence: string): string | null {
+  if (!/\b(decided|agreed|resolved|concluded|approved|confirmed)\b/i.test(sentence)) {
+    return null;
   }
 
-  polished = polished.trim();
-  if (polished.length < 20) return null;
-  
-  // Capitalize first letter after cleaning
-  polished = polished.replace(/^[^a-zA-Z]*([a-zA-Z])/, (match, p1) => match.replace(p1, p1.toUpperCase()));
-  
-  if (!/[.!?]$/.test(polished)) polished += '.';
+  let decision = sentence
+    .replace(/\b(?:it was|we have|I have)?\s*(?:decided|agreed|resolved|concluded|approved|confirmed)\s+(?:that|to)?\s*/i, '')
+    .replace(/\b(?:the|a)\s+(?:decision|agreement)\s+(?:is|was)\s*/i, '')
+    .trim();
 
-  return polished;
+  if (decision.length < 10) return null;
+  
+  return decision.charAt(0).toUpperCase() + decision.slice(1).replace(/[.!?;,]+$/, '') + '.';
 }
 
-function generateExecutiveSummary(
-  keyPoints: Map<string, string[]>, 
-  decisions: string[], 
-  actions: ActionItem[], 
-  title: string,
-  type: MeetingType
-): string {
-  const topicCount = keyPoints.size;
-  const decisionCount = decisions.length;
-  const actionCount = actions.length;
+function cleanDiscussionPoint(text: string): string | null {
+  // Remove first person fluff
+  let cleaned = text
+    .replace(/\bwe\s+(?:discussed|talked about|went over|looked at)\b/gi, 'Discussion covered')
+    .replace(/\bwe\s+noted\b/gi, 'Noted')
+    .replace(/\bI\s+(?:mentioned|explained|suggested)\b/gi, 'Raised')
+    .replace(/\bI\s+want\b/gi, 'Focus on')
+    .replace(/\bwe\s+agreed\b/gi, 'Consensus reached')
+    .replace(/\bwe\s+need\s+to\s+improve\b/gi, 'Improvement needed')
+    .replace(/\bas you know\b/gi, '')
+    .replace(/\bI\s+think\b/gi, 'View:')
+    .replace(/\bstart\s+with\s+point\s+one\b/gi, 'review initial points')
+    .replace(/\b(that'?s|that is)\s+in\s+between\b/gi, 'regarding')
+    .replace(/\bsales\s+of\s+bar\b/gi, 'bar sales performance');
+
+  // Remove rambling endings
+  cleaned = cleaned.replace(/\s+(?:or|and)\s+(?:something|whatever|etc|so on).*/gi, '');
+  cleaned = cleaned.replace(/\s+maybe\s+.*/gi, '');
+
+  cleaned = cleaned.trim();
   
-  let summary = `_Meeting addressed ${topicCount} key topic area${topicCount !== 1 ? 's' : ''}`;
+  if (cleaned.length < 20 || cleaned.length > 120) return null;
   
-  if (decisionCount > 0) {
-    summary += ` with ${decisionCount} formal decision${decisionCount !== 1 ? 's' : ''}`;
+  // Ensure it reads like a summary, not transcript
+  if (!cleaned.match(/^(Discussion|Noted|Raised|Consensus|Improvement|Review|Update|Focus)/i)) {
+    cleaned = 'Discussion covered ' + cleaned.charAt(0).toLowerCase() + cleaned.slice(1);
   }
-  
-  if (actionCount > 0) {
-    summary += `${decisionCount > 0 ? ' and' : ' with'} ${actionCount} action item${actionCount !== 1 ? 's' : ''} identified`;
-  }
-  
-  summary += `._`;
-  
-  // Add context for HR meetings
-  if (type === 'disciplinary') {
-    summary += ` _This constitutes a formal disciplinary hearing._`;
-  } else if (type === 'investigation') {
-    summary += ` _This is a fact-finding investigation meeting._`;
-  } else if (type === '1:1') {
-    summary += ` _Regular check-in meeting._`;
-  }
-  
-  return summary;
+
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1).replace(/[.!?;,]+$/, '') + '.';
 }
 
-function formatAttendees(attendees: Attendee[]): string {
+function detectTopic(text: string): string {
+  const lower = text.toLowerCase();
+  
+  if (/\b(sales|revenue|profit|target|client|customer|business development|pipeline)\b/.test(lower)) return 'Sales & Business Development';
+  if (/\b(shift|schedule|attendance|punctual|late|timekeeping|roster)\b/.test(lower)) return 'Attendance & Scheduling';
+  if (/\b(budget|cost|financial|expense|spend|cash flow|invoice)\b/.test(lower)) return 'Finance';
+  if (/\b(performance|review|training|development|career|progress)\b/.test(lower)) return 'Performance & Development';
+  if (/\b(project|deadline|delivery|milestone|timeline)\b/.test(lower)) return 'Projects';
+  if (/\b(complaint|feedback|service|customer experience)\b/.test(lower)) return 'Customer Service';
+  if (/\b(safety|compliance|risk|security|health)\b/.test(lower)) return 'Safety & Compliance';
+  if (/\b(operation|process|procedure|system)\b/.test(lower)) return 'Operations';
+  
+  return 'General';
+}
+
+function calculateSimilarity(str1: string, str2: string): number {
+  // Simple similarity check to avoid duplicate points
+  const words1 = new Set(str1.split(/\s+/));
+  const words2 = new Set(str2.split(/\s+/));
+  const intersection = new Set([...words1].filter(x => words2.has(x)));
+  const union = new Set([...words1, ...words2]);
+  return intersection.size / union.size;
+}
+
+function formatAttendees(attendees: Attendee[], type: MeetingType): string {
   if (attendees.length === 0) return '_No attendees recorded_';
   
-  return attendees.map(a => {
-    const role = a.role.trim();
-    return `• **${a.name}** – ${role}`;
-  }).join('\n');
+  // Sort by importance for HR meetings
+  const rolePriority: Record<string, number> = {
+    'Chair': 1, 'Investigator': 1, 'Manager': 2, 'HR': 3, 
+    'Employee': 4, 'Note-taker': 5, 'Witness': 6, 'Companion': 7
+  };
+  
+  const sorted = [...attendees].sort((a, b) => {
+    const priA = rolePriority[a.role] || 99;
+    const priB = rolePriority[b.role] || 99;
+    return priA - priB;
+  });
+  
+  return sorted.map(a => `• **${a.name}** – ${a.role}`).join('\n');
 }
 
 function formatKeyPoints(keyPoints: Map<string, string[]>): string {
-  if (keyPoints.size === 0) {
-    return '_No substantive discussion points recorded._';
-  }
+  if (keyPoints.size === 0) return '_No discussion points recorded._';
 
   const sections: string[] = [];
-  
-  // Sort topics alphabetically for consistency
   const sortedTopics = Array.from(keyPoints.entries()).sort((a, b) => a[0].localeCompare(b[0]));
   
   for (const [topic, points] of sortedTopics) {
     if (points.length === 0) continue;
-    const topicHeader = `**${topic}**`;
-    const bulletPoints = points.map(p => `  • ${p}`).join('\n');
-    sections.push(`${topicHeader}\n${bulletPoints}`);
+    sections.push(`**${topic}**\n${points.map(p => `• ${p}`).join('\n')}`);
   }
   
   return sections.join('\n\n');
@@ -399,125 +328,98 @@ function formatDecisions(decisions: string[]): string {
 
 function formatActionsTable(actions: ActionItem[]): string {
   if (actions.length === 0) {
-    return '| Action | Owner | Deadline |\n|:-------|:-----:|:---------|\n| _No specific actions agreed_ | – | – |';
+    return '| Action | Owner | Deadline |\n|:-------|:-----:|:---------|\n| _No actions recorded_ | – | – |';
   }
 
-  const header = '| Action | Owner | Deadline |';
-  const separator = '|:-------|:-----:|:---------|';
-  
   const rows = actions.map(a => {
-    let action = a.action.replace(/\|/g, '/').trim();
-    if (action.length > 70) action = action.substring(0, 67) + '...';
+    let action = a.action.replace(/\|/g, '/');
+    // Truncate long actions
+    if (action.length > 60) action = action.substring(0, 57) + '...';
     
-    const owner = a.owner || 'TBC';
-    const deadline = a.deadline || 'TBC';
-    
-    return `| ${action} | ${owner} | ${deadline} |`;
+    return `| ${action} | ${a.owner} | ${a.deadline || 'TBC'} |`;
   });
   
-  return [header, separator, ...rows].join('\n');
+  return ['| Action | Owner | Deadline |', '|:-------|:-----:|:---------|', ...rows].join('\n');
 }
 
-function formatNextSteps(type: MeetingType, actions: ActionItem[], decisionCount: number): string {
+function formatNextSteps(type: MeetingType, actions: ActionItem[]): string {
   const steps: string[] = [];
   
   if (actions.length > 0) {
-    steps.push(`• **Action Items:** ${actions.length} item${actions.length !== 1 ? 's' : ''} to be completed as detailed above`);
-  }
-  
-  if (decisionCount > 0) {
-    steps.push(`• **Implementation:** Decisions to be implemented as agreed`);
+    steps.push(`• Complete ${actions.length} action item${actions.length !== 1 ? 's' : ''} detailed above`);
   }
   
   if (type === 'disciplinary') {
-    steps.push('• **HR Follow-up:** Formal disciplinary procedures to be actioned in accordance with company policy');
-    steps.push('• **Documentation:** Complete records to be filed securely within 48 hours');
-    steps.push('• **Right of Appeal:** Employee to be advised of appeal rights in writing');
+    steps.push('• HR to process formal documentation within 48 hours');
+    steps.push('• Written outcome to be issued within 5 working days');
+    steps.push('• Employee rights to appeal to be confirmed in writing');
   } else if (type === 'investigation') {
-    steps.push('• **Investigation:** Fact-finding to continue as necessary');
-    steps.push('• **Next Meeting:** Follow-up scheduled if required to conclude investigation');
-    steps.push('• **Confidentiality:** All parties reminded of confidentiality requirements');
+    steps.push('• Investigation findings to be compiled');
+    steps.push('• Decision on next steps within 10 working days');
   } else if (type === '1:1') {
-    steps.push('• **Follow-up:** Next 1:1 to be scheduled as per regular cadence');
-    steps.push('• **Development:** Any agreed development actions to be tracked');
+    steps.push('• Next 1:1 to be scheduled per regular cadence');
   }
   
-  steps.push('• **Circulation:** Minutes to be distributed to all attendees within 24 hours');
-  
-  if (actions.length > 0) {
-    steps.push('• **Review:** Outstanding actions to be reviewed at next meeting');
-  }
+  steps.push('• Minutes circulated to attendees within 24 hours');
   
   return steps.join('\n');
 }
 
-function generateHRAddendum(meeting: Meeting): string {
-  const type = meeting.type;
-  const isDisciplinary = type === 'disciplinary';
+function generateExecutiveSummary(
+  keyPoints: Map<string, string[]>, 
+  actions: ActionItem[], 
+  title: string,
+  type: MeetingType
+): string {
+  const topicCount = keyPoints.size;
+  const actionCount = actions.length;
+  
+  let summary = `Meeting addressed ${topicCount} topic area${topicCount !== 1 ? 's' : ''}`;
+  if (actionCount > 0) summary += ` with ${actionCount} action item${actionCount !== 1 ? 's' : ''}`;
+  summary += `. **${title}**.`;
+  
+  if (type === 'disciplinary') summary += ' *Formal disciplinary hearing.*';
+  if (type === 'investigation') summary += ' *Investigation meeting.*';
+  
+  return summary;
+}
+
+function generateHRAddendum(type: MeetingType, consentConfirmed: boolean): string {
+  if (type === 'disciplinary') {
+    return `
+
+## HR Documentation
+
+**Allegations:** Presented to employee. Response recorded.
+**Evidence:** Reviewed and acknowledged.
+**Mitigation:** ${consentConfirmed ? 'Employee response provided.' : 'Pending.'}
+**Outcome:** To be confirmed in writing within 5 working days.
+**Appeal Rights:** 5 working days from written confirmation.`;
+  }
   
   return `
----
 
-## HR Addendum (${isDisciplinary ? 'Disciplinary Hearing' : 'Investigation Meeting'})
+## HR Documentation
 
-${isDisciplinary ? `### Disciplinary Allegations
-_Allegations presented to the employee. Detailed response recorded in meeting transcript._
-
-### Evidence Reviewed
-_List of documentary evidence presented:_
-- [ ] Witness statements (if applicable)
-- [ ] Relevant policies/procedures
-- [ ] Previous records (if applicable)
-
-### Mitigating Factors
-_Any mitigating circumstances or explanations offered by the employee:_
-${meeting.consentConfirmed ? '_Employee provided full response_' : '_Consent pending_'}
-
-### Outcome
-${isDisciplinary ? `_Decision communicated and rationale explained. Written confirmation to follow within 5 working days._` : `_No formal decision reached at investigation stage. Further enquiries may be required._`}
-
-### Appeal Rights
-${isDisciplinary ? `_Employee advised of right to appeal within 5 working days of receiving written outcome._` : `_Employee advised that investigation is ongoing and no decision has been made._`}
-
-` : `### Investigation Scope
-_Investigation parameters and allegations under review explained to employee._
-
-### Evidence Presented
-_Documents and witness accounts reviewed with employee:_
-- [ ] Incident reports
-- [ ] Witness statements
-- [ ] Relevant communications
-
-### Employee Response
-_Employee given opportunity to respond and provide evidence:_
-${meeting.consentConfirmed ? '_Full cooperation provided_' : '_Awaiting full response_'}
-
-### Next Steps
-- Investigation findings to be compiled
-- Decision on formal proceedings to follow
-- Employee to be informed of outcome within 10 working days
-
-`}---
-`;
+**Investigation Scope:** Parameters explained to employee.
+**Evidence:** Documents reviewed.
+**Response:** ${consentConfirmed ? 'Employee cooperation provided.' : 'Pending.'}
+**Next Steps:** Findings to be compiled.`;
 }
 
 // Helper functions
 function mergeActions(existing: ActionItem[], parsed: ActionItem[]): ActionItem[] {
   if (existing.length === 0) return parsed;
+  if (parsed.length === 0) return existing;
   
-  // Use existing actions but fill in gaps from parsed if needed
   const merged = [...existing];
   
-  // Add parsed actions that don't duplicate existing ones
-  for (const parsedAction of parsed) {
-    const isDuplicate = existing.some(e => 
-      e.action.toLowerCase().includes(parsedAction.action.toLowerCase()) ||
-      parsedAction.action.toLowerCase().includes(e.action.toLowerCase())
+  for (const p of parsed) {
+    const isDup = existing.some(e => 
+      e.action.toLowerCase().includes(p.action.toLowerCase().substring(0, 20)) ||
+      p.action.toLowerCase().includes(e.action.toLowerCase().substring(0, 20))
     );
-    
-    if (!isDuplicate) {
-      merged.push(parsedAction);
-    }
+    if (!isDup) merged.push(p);
   }
   
   return merged;
@@ -525,11 +427,22 @@ function mergeActions(existing: ActionItem[], parsed: ActionItem[]): ActionItem[
 
 function formatDate(dateStr: string): string {
   try {
-    const date = new Date(dateStr);
-    return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+    return new Date(dateStr).toLocaleDateString('en-GB', { 
+      day: 'numeric', month: 'long', year: 'numeric' 
+    });
   } catch {
     return dateStr;
   }
+}
+
+function formatMeetingType(type: MeetingType): string {
+  const labels: Record<MeetingType, string> = {
+    '1:1': '1:1 Meeting',
+    'team': 'Team Meeting', 
+    'disciplinary': 'Disciplinary Hearing',
+    'investigation': 'Investigation Meeting'
+  };
+  return labels[type];
 }
 
 function formatMeetingTypeHeader(type: MeetingType): string {
@@ -543,12 +456,12 @@ function formatMeetingTypeHeader(type: MeetingType): string {
 }
 
 function getConfidentialityLevel(type: MeetingType): string {
-  if (type === 'disciplinary' || type === 'investigation') return 'CONFIDENTIAL – HR & Legal Records';
-  if (type === '1:1') return 'CONFIDENTIAL – Management Records';
-  return 'INTERNAL USE ONLY – Business Records';
+  if (type === 'disciplinary' || type === 'investigation') return 'CONFIDENTIAL – HR Records';
+  if (type === '1:1') return 'CONFIDENTIAL – Management';
+  return 'Internal';
 }
 
-// Import these from your types file or define here
+// Import from types or define locally
 const MEETING_TYPE_LABELS: Record<MeetingType, string> = {
   '1:1': '1:1 Meeting',
   'team': 'Team Meeting',
@@ -556,24 +469,22 @@ const MEETING_TYPE_LABELS: Record<MeetingType, string> = {
   'investigation': 'Investigation Meeting',
 };
 
-// Export for compatibility with existing code
 export function extractActionsFromMinutes(minutesText: string): ActionItem[] {
   const actions: ActionItem[] = [];
   
-  const tableRegex = /\|\s*Action\s*\|\s*Owner\s*\|\s*Deadline\s*\|\n\|[-:]+\|[-:]+\|[-:]+\|\n([\s\S]*?)(?=\n##|\n---|$)/i;
-  const match = minutesText.match(tableRegex);
+  const match = minutesText.match(/\|\s*Action\s*\|\s*Owner\s*\|\s*Deadline\s*\|\n\|[-:]+\|[-:]+\|[-:]+\|\n([\s\S]*?)(?=\n##|\n---|$)/i);
   
-  if (match && match[1]) {
+  if (match) {
     const lines = match[1].split('\n')
       .filter(l => l.startsWith('|') && !l.includes('Action'))
-      .map(l => l.split('|').map(p => p.trim()).filter(p => p));
+      .map(l => l.split('|').map(p => p.trim()).filter(Boolean));
     
     for (const parts of lines) {
-      if (parts.length >= 2 && parts[0] !== '_No specific actions agreed_' && !parts[0].startsWith('---')) {
+      if (parts.length >= 2 && !parts[0].includes('No actions')) {
         actions.push({
           id: crypto.randomUUID(),
           action: parts[0],
-          owner: parts[1] || 'TBC',
+          owner: parts[1],
           deadline: parts[2]
         });
       }

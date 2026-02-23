@@ -30,9 +30,7 @@ async function generateWithClaude(meeting: Meeting, apiKey: string): Promise<str
   const formattedDate = formatDate(date);
   const confidentiality = getConfidentialityLevel(type);
 
-  const prompt = `You are a professional minute-taker. Your job is to convert a raw speech-to-text transcript into clean, professional meeting minutes in markdown format.
-
-The transcript may be messy, unpunctuated, and contain speech errors. Use your understanding to interpret what was actually meant and produce accurate, professional output.
+  const prompt = `You are a professional minute-taker based in the UK. Always use British English spelling and conventions (e.g. "organisation" not "organization", "recognised" not "recognized", "behaviour" not "behavior", "summarise" not "summarize", dates in DD/MM/YYYY format).
 
 MEETING DETAILS:
 - Title: ${title}

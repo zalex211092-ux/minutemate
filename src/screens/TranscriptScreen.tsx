@@ -9,7 +9,6 @@ interface TranscriptScreenProps {
 }
 
 export function TranscriptScreen({ meeting, onUpdateTranscript }: TranscriptScreenProps) {
-  console.log('TranscriptScreen rendering, meeting:', meeting);
   
   const navigate = useNavigate();
   const [isEditing, setIsEditing] = useState(false);

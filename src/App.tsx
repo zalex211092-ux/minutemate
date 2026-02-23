@@ -16,7 +16,6 @@ function App() {
   const { currentMeeting, saveCurrentMeeting, clearCurrentMeeting } = useCurrentMeeting();
 
 // DEBUG - Add this right after the line above
-console.log('App render - currentMeeting:', currentMeeting?.id || 'null');
   const handleStartNewMeeting = () => {
     clearCurrentMeeting();
   };

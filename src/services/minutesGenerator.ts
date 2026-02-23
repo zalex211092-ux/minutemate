@@ -449,7 +449,7 @@ function calculateSimilarity(str1: string, str2: string): number {
 }
 
 // ============================================================================
-// FORMATTING FUNCTIONS
+// FORMATTING FUNCTIONS - FIXED WITH ASCII CHARACTERS ONLY
 // ============================================================================
 
 function formatAttendees(attendees: Attendee[], type: MeetingType): string {
@@ -466,7 +466,7 @@ function formatAttendees(attendees: Attendee[], type: MeetingType): string {
     return priA - priB;
   });
   
-  return sorted.map(a => `• **${a.name}** – ${a.role}`).join('\n');
+  return sorted.map(a => `- **${a.name}** – ${a.role}`).join('\n');
 }
 
 function formatKeyPoints(keyPoints: Map<string, string[]>): string {
@@ -478,7 +478,7 @@ function formatKeyPoints(keyPoints: Map<string, string[]>): string {
   
   for (const [topic, points] of sortedTopics) {
     if (points.length === 0) continue;
-    const bulletPoints = points.map(p => `• ${p}`).join('\n');
+    const bulletPoints = points.map(p => `- ${p}`).join('\n');
     sections.push(`**${topic}**\n${bulletPoints}`);
   }
   
@@ -487,7 +487,7 @@ function formatKeyPoints(keyPoints: Map<string, string[]>): string {
 
 function formatDecisions(decisions: string[]): string {
   if (decisions.length === 0) return '_No formal decisions recorded._';
-  return decisions.map(d => `• ${d}`).join('\n');
+  return decisions.map(d => `- ${d}`).join('\n');
 }
 
 function formatActionsTable(actions: ActionItem[]): string {
@@ -498,7 +498,7 @@ function formatActionsTable(actions: ActionItem[]): string {
   const rows = actions.map(a => {
     let action = a.action.replace(/\|/g, '/');
     if (action.length > 60) action = action.substring(0, 57) + '...';
-    return `| ${action} | ${a.owner} | ${a.deadline || 'TBC'} |';
+    return `| ${action} | ${a.owner} | ${a.deadline || 'TBC'} |`;
   });
   
   return ['| Action | Owner | Deadline |', '|:-------|:-----:|:---------|', ...rows].join('\n');
@@ -508,23 +508,23 @@ function formatNextSteps(type: MeetingType, actions: ActionItem[]): string {
   const steps: string[] = [];
   
   if (actions.length > 0) {
-    steps.push(`• Complete ${actions.length} action item${actions.length !== 1 ? 's' : ''} detailed above`);
+    steps.push(`- Complete ${actions.length} action item${actions.length !== 1 ? 's' : ''} detailed above`);
   }
   
   if (type === 'disciplinary') {
-    steps.push('• HR to process formal documentation within 48 hours');
-    steps.push('• Written outcome to be issued within 5 working days');
-    steps.push('• Employee rights to appeal to be confirmed in writing');
+    steps.push('- HR to process formal documentation within 48 hours');
+    steps.push('- Written outcome to be issued within 5 working days');
+    steps.push('- Employee rights to appeal to be confirmed in writing');
   } else if (type === 'investigation') {
-    steps.push('• Investigation findings to be compiled');
-    steps.push('• Decision on next steps within 10 working days');
+    steps.push('- Investigation findings to be compiled');
+    steps.push('- Decision on next steps within 10 working days');
   } else if (type === '1:1') {
-    steps.push('• Next 1:1 to be scheduled per regular cadence');
+    steps.push('- Next 1:1 to be scheduled per regular cadence');
   } else if (type === 'team') {
-    steps.push('• Progress on actions to be reviewed at next team meeting');
+    steps.push('- Progress on actions to be reviewed at next team meeting');
   }
   
-  steps.push('• Minutes circulated to attendees within 24 hours');
+  steps.push('- Minutes circulated to attendees within 24 hours');
   
   return steps.join('\n');
 }

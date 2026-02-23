@@ -132,7 +132,7 @@ export function useCurrentMeeting() {
   // Initialize from localStorage immediately to prevent null state after navigation
   const [currentMeeting, setCurrentMeeting] = useState<Meeting | null>(() => {
     if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('currentMeeting');
+      const saved = localStorage.getItem(CURRENT_MEETING_KEY);
       return saved ? JSON.parse(saved) : null;
     }
     return null;
@@ -141,15 +141,15 @@ export function useCurrentMeeting() {
   // Keep localStorage in sync with state changes
   useEffect(() => {
     if (currentMeeting) {
-      localStorage.setItem('currentMeeting', JSON.stringify(currentMeeting));
+      localStorage.setItem(CURRENT_MEETING_KEY, JSON.stringify(currentMeeting));
     } else {
-      localStorage.removeItem('currentMeeting');
+      localStorage.removeItem(CURRENT_MEETING_KEY);
     }
   }, [currentMeeting]);
 
   const clearCurrentMeeting = () => {
     setCurrentMeeting(null);
-    localStorage.removeItem('currentMeeting');
+    localStorage.removeItem(CURRENT_MEETING_KEY);
   };
 
   return {
@@ -157,28 +157,4 @@ export function useCurrentMeeting() {
     setCurrentMeeting,
     clearCurrentMeeting
   };
-}
-    setIsLoaded(true);
-  }, []);
-
-  useEffect(() => {
-    if (isLoaded) {
-      if (currentMeeting) {
-        localStorage.setItem(CURRENT_MEETING_KEY, JSON.stringify(currentMeeting));
-      } else {
-        localStorage.removeItem(CURRENT_MEETING_KEY);
-      }
-    }
-  }, [currentMeeting, isLoaded]);
-
-  const saveCurrentMeeting = useCallback((meeting: Meeting | null) => {
-    setCurrentMeeting(meeting);
-  }, []);
-
-  const clearCurrentMeeting = useCallback(() => {
-    setCurrentMeeting(null);
-    localStorage.removeItem(CURRENT_MEETING_KEY);
-  }, []);
-
-  return { currentMeeting, isLoaded, saveCurrentMeeting, clearCurrentMeeting };
 }

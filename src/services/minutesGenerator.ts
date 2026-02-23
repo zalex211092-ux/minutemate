@@ -27,21 +27,17 @@ ${caseRef ? `- **Case Reference:** ${caseRef}` : ''}
 ${attendees.length > 0 ? attendees.map(a => `  - ${a.name} (${a.role})`).join('\n') : '  - Not recorded'}
 
 ## 3. Key Points Discussed
-${keyPoints.length > 0 ? keyPoints.map(p => `- ${p}`).join('\n') : '- General discussion took place'}
+${keyPoints.length > 0 ? keyPoints.map(p => `- ${p}`).join('\n') : '- No key points recorded'}
 
 ## 4. Decisions Made
-${decisions.length > 0 ? decisions.map(d => `- ${d}`).join('\n') : '- No formal decisions recorded'}
+${decisions.length > 0 ? decisions.map(d => `- ${d}`).join('\n') : '- No decisions recorded'}
 
 ## 5. Actions Agreed
-${actions.length > 0 ? formatActionsTable(actions) : '| Action | Owner | Deadline |\\n|--------|-------|----------|\\n| No specific actions recorded | - | - |'}
+${actions.length > 0 ? formatActionsTable(actions) : '| Action | Owner | Deadline |\n|--------|-------|----------|\n| No actions recorded | - | - |'}
 
 ## 6. Next Steps
+${formatNextSteps(type, actions)}
 `;
-  if (type === 'disciplinary' || type === 'investigation') {
-    minutes += '- Follow-up procedures as per HR policy\\n';
-  }
-  minutes += '- Minutes to be distributed to attendees\\n';
-  minutes += '- Any actions to be completed as agreed';
 
   if (type === 'disciplinary' || type === 'investigation') {
     minutes += `
@@ -90,24 +86,22 @@ function parseTranscript(transcript: string | undefined): ParsedContent {
     return { keyPoints, decisions, actions };
   }
 
-  // Clean transcript
+  // Clean transcript - remove filler words and normalize spaces
   let cleaned = transcript
-    .replace(/\b(um|uh|ah|er|hm|like|you know|I mean|sort of|kind of|so|well|okay|right)\b/gi, '')
-    .replace(/\b(\w+)\s+\1\s+\1+\b/gi, '$1')
-    .replace(/\b(\w+)\s+\1\b/gi, '$1')
+    .replace(/\b(um|uh|ah|er|hm|like|you know|I mean|sort of|kind of|basically|literally)\b/gi, '')
+    .replace(/\b(\w+)\s+\1\s+\1+\b/gi, '$1') // triple duplicates
+    .replace(/\b(\w+)\s+\1\b/gi, '$1') // double duplicates
     .replace(/\s{2,}/g, ' ')
     .trim();
 
-  // Split into segments
-  const segments = cleaned
-    .split(/[.!?]+/)
-    .map(s => s.trim())
-    .filter(s => s.length > 10);
+  // Split into segments - handle both punctuation and conjunctions
+  const segments = splitIntoSegments(cleaned);
 
   for (const segment of segments) {
-    const lowerSegment = segment.toLowerCase();
+    // Skip if too short or just fluff
+    if (segment.length < 10 || isJustFluff(segment)) continue;
     
-    // Check if it's an ACTION
+    // Check if it's an ACTION (imperative/directive)
     const actionMatch = detectAction(segment);
     if (actionMatch) {
       actions.push(actionMatch);
@@ -123,146 +117,205 @@ function parseTranscript(transcript: string | undefined): ParsedContent {
     
     // Otherwise it's a KEY POINT
     const point = formatAsKeyPoint(segment);
-    if (point && !isGreeting(point)) {
+    if (point) {
       keyPoints.push(point);
     }
+  }
+
+  // If we have very few key points but have transcript, try to extract more
+  if (keyPoints.length === 0 && segments.length > 0) {
+    const meaningfulContent = segments
+      .filter(s => !isJustFluff(s) && s.length > 15)
+      .map(s => formatAsKeyPoint(s))
+      .filter((p): p is string => p !== null);
+    keyPoints.push(...meaningfulContent.slice(0, 5));
   }
 
   return { keyPoints, decisions, actions };
 }
 
+function splitIntoSegments(text: string): string[] {
+  // First try to split by sentence endings
+  let segments = text
+    .replace(/([.!?])\s+/g, "$1|")
+    .split("|")
+    .map(s => s.trim())
+    .filter(s => s.length > 0);
+  
+  // If no sentence breaks found (common in speech-to-text), split by conjunctions
+  if (segments.length === 1 && segments[0].length > 100) {
+    segments = segments[0]
+      .replace(/\s+(and|so|but|however|therefore)\s+/gi, "|$1 ")
+      .split("|")
+      .map(s => s.trim())
+      .filter(s => s.length > 10);
+  }
+  
+  return segments;
+}
+
+function isJustFluff(segment: string): boolean {
+  const fluffPatterns = [
+    /^(hello|hi|hey|welcome|thanks|thank you|good morning|good afternoon|good evening|okay|ok|right|so|well|now)[\s.!]*$/i,
+    /^(as you know|just to|I wanted to|I think|I believe|I feel|I guess)[\s.!]*$/i,
+  ];
+  return fluffPatterns.some(pattern => pattern.test(segment));
+}
+
 function detectAction(segment: string): { action: string; owner: string; deadline: string } | null {
   const lower = segment.toLowerCase();
   
-  // Action patterns
-  const actionPatterns = [
-    { regex: /\b(action item|action|task)\s*(?:for|to)?\s+(\w+)?\s*(?:is|:)?\s*(.+)/i, extract: (m: RegExpMatchArray) => ({ action: m[3] || m[2], owner: m[2] || 'Not stated' }) },
-    { regex: /\b(\w+)\s+(?:will|shall|is to|needs to|must)\s+(.+)/i, extract: (m: RegExpMatchArray) => ({ action: m[2], owner: m[1] }) },
-    { regex: /\b(we|I)\s+(?:will|shall|need to|must|agreed to)\s+(.+)/i, extract: (m: RegExpMatchArray) => ({ action: m[2], owner: m[1] === 'I' ? 'Individual' : 'Team' }) },
-    { regex: /\b(to|need to|must)\s+(.+?)\s+(?:by|before|for)\s+(.+)/i, extract: (m: RegExpMatchArray) => ({ action: m[2], owner: 'Not stated', deadline: m[3] }) },
+  // Strong action indicators
+  const actionIndicators = [
+    { pattern: /\b(want|need|ask|tell|remind)\s+(?:you|him|her|them|us)\s+(?:to|that)\b/i, type: 'directive' },
+    { pattern: /\b(you|we|they|he|she)\s+(?:must|should|need to|have to|got to|gotta)\b/i, type: 'obligation' },
+    { pattern: /\b(make sure|ensure|see that|confirm that)\b/i, type: 'instruction' },
+    { pattern: /\b(will|shall)\s+(?:send|review|complete|finish|prepare|update|check|look at)\b/i, type: 'commitment' },
+    { pattern: /\b(don't|do not|never)\s+(?:be|forget|miss)\b/i, type: 'prohibition' },
+    { pattern: /\b(always|must be|should be)\s+(?:on time|punctual|present|available)\b/i, type: 'requirement' },
   ];
 
-  for (const pattern of actionPatterns) {
-    const match = segment.match(pattern.regex);
-    if (match) {
-      const extracted = pattern.extract(match);
-      return {
-        action: cleanActionText(extracted.action),
-        owner: extracted.owner || 'Not stated',
-        deadline: extracted.deadline || 'Not stated'
-      };
+  const isAction = actionIndicators.some(ind => ind.pattern.test(segment));
+  
+  if (!isAction) return null;
+
+  // Extract owner
+  let owner = extractName(segment) || 'Team';
+  if (/\b(I will|I'll|I shall)\b/i.test(segment)) owner = 'Manager';
+  if (/\b(we will|we'll|we shall)\b/i.test(segment)) owner = 'Team';
+  if (/\b(you will|you'll|you must)\b/i.test(segment)) owner = 'Staff';
+  
+  // Extract deadline
+  const deadline = extractDeadline(segment) || 'TBC';
+  
+  // Clean and format the action text
+  let actionText = segment
+    .replace(/\b(?:I want you to|I need you to|I ask you to|make sure you|ensure you)\b/gi, '')
+    .replace(/\b(?:we|I)\s+(?:will|shall|must|need to|have to)\b/gi, '')
+    .replace(/\b(?:you|we|they)\s+(?:must|should|need to|have to)\b/gi, '')
+    .trim();
+    
+  // Capitalize first letter
+  actionText = actionText.charAt(0).toUpperCase() + actionText.slice(1);
+  actionText = actionText.replace(/[.!?;,]+$/, '');
+  
+  // If action is too long, summarize
+  if (actionText.length > 80) {
+    const coreMatch = actionText.match(/\b(?:ensure|maintain|complete|review|send|prepare|update|check|be|arrive|attend)\b.+/i);
+    if (coreMatch) {
+      actionText = coreMatch[0];
+    } else {
+      actionText = actionText.substring(0, 77) + '...';
     }
   }
 
-  // Check for deadline mentions
-  const deadlineMatch = segment.match(/\b(complete|finish|review|send|prepare|update)\b.+\b(by|before|due)\b.+/i);
-  if (deadlineMatch) {
-    return {
-      action: cleanActionText(segment),
-      owner: extractName(segment) || 'Not stated',
-      deadline: extractDeadline(segment) || 'Not stated'
-    };
-  }
-
-  return null;
+  return { action: actionText, owner, deadline };
 }
 
 function detectDecision(segment: string): string | null {
-  const lower = segment.toLowerCase();
-  
-  // Decision keywords
+  // Decision patterns
   const decisionPatterns = [
-    /\b(?:it was|we|I)\s+(?:decided|agreed|resolved|concluded|determined|approved|confirmed)\b/i,
+    /\b(?:it was|we have|I have|the panel has)?\s*(?:decided|agreed|resolved|concluded|determined|approved|confirmed)\b/i,
     /\b(?:decision|agreement|resolution)\s+(?:is|was|made|reached)\b/i,
     /\b(?:agreed|approved|confirmed|accepted|authorised|authorized)\s+(?:that|to)\b/i,
   ];
 
   const isDecision = decisionPatterns.some(pattern => pattern.test(segment));
   
-  if (isDecision) {
-    // Clean up decision text
-    let decision = segment
-      .replace(/\b(?:it was|we|I)\s+(?:decided|agreed|resolved|concluded|determined|approved|confirmed)\s+(?:that|to)?\s*/i, '')
-      .replace(/\b(?:the|a|an)\s+(?:decision|agreement|resolution)\s+(?:is|was|made|reached)\s*(?:that)?\s*/i, '');
-    
-    return formatAsDecision(decision);
-  }
+  if (!isDecision) return null;
 
-  return null;
-}
-
-function formatAsKeyPoint(segment: string): string | null {
-  // Remove conversational fluff
-  let point = segment
-    .replace(/\b(?:hello|hi|hey|welcome|thanks|thank you|good morning|good afternoon|okay|so|well|right|now)\b/gi, '')
-    .replace(/\b(?:as you know|just to|I wanted to|I think|I believe|I feel|basically|actually|honestly)\b/gi, '')
-    .replace(/\s{2,}/g, ' ')
+  // Clean up decision text
+  let decision = segment
+    .replace(/\b(?:it was|we have|I have)?\s*(?:decided|agreed|resolved|concluded|determined|approved|confirmed)\s+(?:that|to)?\s*/i, '')
+    .replace(/\b(?:the|a|an)\s+(?:decision|agreement|resolution)\s+(?:is|was|made|reached)\s*(?:that)?\s*/i, '')
+    .replace(/\b(?:going forward|from now on|with immediate effect)\b/gi, '')
     .trim();
 
-  if (point.length < 15) return null;
-
-  // Convert to professional meeting minutes style
-  point = point
-    .replace(/\bwe discussed\b/gi, 'discussed')
-    .replace(/\bwe talked about\b/gi, 'discussed')
-    .replace(/\bwe went over\b/gi, 'reviewed')
-    .replace(/\bwe looked at\b/gi, 'reviewed')
-    .replace(/\bwe considered\b/gi, 'considered')
-    .replace(/\bwe noted\b/gi, 'noted')
-    .replace(/\bI mentioned\b/gi, 'mentioned')
-    .replace(/\bI explained\b/gi, 'explained')
-    .replace(/\bI presented\b/gi, 'presented');
-
-  // Capitalize first letter
-  point = point.charAt(0).toUpperCase() + point.slice(1);
+  if (decision.length < 5) return null;
   
-  // Remove trailing punctuation except periods
-  point = point.replace(/[!?,;]+$/, '');
-  
-  // Add period if missing
-  if (!point.endsWith('.')) point += '.';
-
-  // Truncate if too long
-  if (point.length > 120) {
-    point = point.substring(0, 117) + '...';
-  }
-
-  return point;
-}
-
-function formatAsDecision(decision: string): string {
-  decision = decision.trim();
-  
-  // Capitalize first letter
   decision = decision.charAt(0).toUpperCase() + decision.slice(1);
-  
-  // Remove trailing punctuation
-  decision = decision.replace(/[!?,;]+$/, '');
-  
-  // Add period if missing
+  decision = decision.replace(/[.!?;,]+$/, '');
   if (!decision.endsWith('.')) decision += '.';
 
   return decision;
 }
 
-function cleanActionText(action: string): string {
-  return action
-    .replace(/\b(?:the|a|an)\s+/gi, '')
+function formatAsKeyPoint(segment: string): string | null {
+  // Remove conversational fluff at start
+  let point = segment
+    .replace(/^(?:hello|hi|hey|welcome|thanks|thank you|good morning|good afternoon|okay|so|well|right|now|and|but)\s+/gi, '')
+    .replace(/\b(?:as you know|just to|I wanted to|I think|I believe|I feel|basically|actually|honestly|literally)\b/gi, '')
     .replace(/\s{2,}/g, ' ')
-    .trim()
-    .replace(/[.!?;]+$/, '');
+    .trim();
+
+  if (point.length < 15) return null;
+
+  // Convert conversational phrases to professional minutes style
+  const replacements: [RegExp, string][] = [
+    [/\bwe discussed\b/gi, 'Discussed'],
+    [/\bwe talked about\b/gi, 'Discussed'],
+    [/\bwe went over\b/gi, 'Reviewed'],
+    [/\bwe looked at\b/gi, 'Reviewed'],
+    [/\bwe considered\b/gi, 'Considered'],
+    [/\bwe noted\b/gi, 'Noted'],
+    [/\bI mentioned\b/gi, 'Raised'],
+    [/\bI explained\b/gi, 'Explained'],
+    [/\bI presented\b/gi, 'Presented'],
+    [/\bI suggested\b/gi, 'Proposed'],
+    [/\bwe agreed\b/gi, 'Agreement reached on'],
+    [/\bthere was a discussion about\b/gi, 'Discussion covered'],
+    [/\bwe covered\b/gi, 'Covered'],
+  ];
+
+  for (const [pattern, replacement] of replacements) {
+    point = point.replace(pattern, replacement);
+  }
+
+  if (/^[a-z]/.test(point)) {
+    point = point.charAt(0).toUpperCase() + point.slice(1);
+  }
+  
+  point = point.replace(/[!?,;]+$/, '');
+  if (!point.endsWith('.')) point += '.';
+  if (point.length > 120) point = point.substring(0, 117).trim() + '...';
+
+  return point;
+}
+
+function formatNextSteps(type: string, actions: { action: string }[]): string {
+  const steps: string[] = [];
+  
+  if (type === 'disciplinary' || type === 'investigation') {
+    steps.push('- HR follow-up procedures to be actioned as per policy');
+  }
+  
+  if (actions.length > 0) {
+    steps.push(`- ${actions.length} action item${actions.length > 1 ? 's' : ''} to be completed as detailed above`);
+  }
+  
+  steps.push('- Minutes to be circulated to all attendees');
+  steps.push('- Outstanding actions to be reviewed at next meeting');
+  
+  return steps.join('\n');
 }
 
 function extractName(segment: string): string | null {
-  const nameMatch = segment.match(/\b(?:by|for|assigned to)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b/);
-  return nameMatch ? nameMatch[1] : null;
+  const nameMatch = segment.match(/\b(?:by|for|assigned to|owner:|responsible:)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b/);
+  if (nameMatch) return nameMatch[1];
+  
+  const subjectMatch = segment.match(/\b([A-Z][a-z]+)\s+(?:will|shall|is to|needs to)\b/);
+  if (subjectMatch) return subjectMatch[1];
+  
+  return null;
 }
 
 function extractDeadline(segment: string): string | null {
   const deadlinePatterns = [
-    /\b(?:by|before|due)\s+(?:next\s+)?(\w+(?:day| week| month)?)/i,
-    /\b(?:by|before|due)\s+(\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?\w+)/i,
-    /\b(?:by|before|due)\s+(tomorrow|end of day|end of week|Friday|Monday)/i,
+    /\b(?:by|before|due|for)\s+(?:the\s+)?(end\s+of\s+(?:day|week|month)|close\s+of\s+business|COB|EOD)/i,
+    /\b(?:by|before|due|for)\s+(?:next\s+)?(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)/i,
+    /\b(?:by|before|due|for)\s+(\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:January|February|March|April|May|June|July|August|September|October|November|December))/i,
+    /\b(?:by|before|due|for)\s+(tomorrow|today|this week|next week)/i,
+    /\b(?:within|in)\s+(\d+\s*(?:days?|weeks?|hours?))/i,
   ];
 
   for (const pattern of deadlinePatterns) {
@@ -272,37 +325,48 @@ function extractDeadline(segment: string): string | null {
   return null;
 }
 
-function isGreeting(point: string): boolean {
-  const greetings = ['hello', 'hi', 'welcome', 'good morning', 'good afternoon', 'thanks for', 'thank you for'];
-  return greetings.some(g => point.toLowerCase().includes(g));
-}
-
 function formatActionsTable(actions: { action: string; owner: string; deadline: string }[]): string {
-  let table = '| Action | Owner | Deadline |\\n';
-  table += '|--------|-------|----------|\\n';
-  table += actions.slice(0, 6).map(a => 
-    `| ${a.action.substring(0, 50)}${a.action.length > 50 ? '...' : ''} | ${a.owner} | ${a.deadline} |`
-  ).join('\\n');
-  return table;
+  // FIXED: Use actual newlines (\n) not escaped (\\n)
+  const header = '| Action | Owner | Deadline |';
+  const separator = '|--------|-------|----------|';
+  
+  const rows = actions.slice(0, 8).map(a => {
+    let cleanAction = a.action
+      .replace(/\|/g, '/') // Remove pipe characters that break markdown
+      .replace(/\n/g, ' ') // Remove internal newlines
+      .trim();
+      
+    if (cleanAction.length > 60) {
+      cleanAction = cleanAction.substring(0, 57) + '...';
+    }
+    
+    let owner = (a.owner || 'TBC').charAt(0).toUpperCase() + (a.owner || 'TBC').slice(1);
+    let deadline = a.deadline || 'TBC';
+    
+    return `| ${cleanAction} | ${owner} | ${deadline} |`;
+  });
+  
+  return [header, separator, ...rows].join('\n');
 }
 
 export function extractActionsFromMinutes(minutesText: string): Meeting['actions'] {
   const actions: Meeting['actions'] = [];
   
-  const actionTableRegex = /\|\s*Action\s*\|\s*Owner\s*\|\s*Deadline\s*\|[\\s\\S]*?(?=\\n##|\\n---|$)/i;
+  // Fixed regex to properly match newlines
+  const actionTableRegex = /\|\s*Action\s*\|\s*Owner\s*\|\s*Deadline\s*\|\n\|[-\s|]+\n([\s\S]*?)(?=\n##|\n---|$)/i;
   const tableMatch = minutesText.match(actionTableRegex);
   
-  if (tableMatch) {
-    const lines = tableMatch[0].split('\\n').filter((l: string) => l.startsWith('|') && !l.includes('Action') && !l.includes('---'));
+  if (tableMatch && tableMatch[1]) {
+    const lines = tableMatch[1].split('\n').filter(l => l.startsWith('|') && !l.includes('Action'));
     
     for (const line of lines) {
-      const parts = line.split('|').map((p: string) => p.trim()).filter((p: string) => p);
-      if (parts.length >= 2 && parts[0] !== 'No specific actions recorded') {
+      const parts = line.split('|').map(p => p.trim()).filter(p => p);
+      if (parts.length >= 2 && parts[0] !== 'No actions recorded' && !parts[0].startsWith('---')) {
         actions.push({
           id: crypto.randomUUID(),
           action: parts[0],
-          owner: parts[1] || 'Not stated',
-          deadline: parts[2] || 'Not stated',
+          owner: parts[1] || 'TBC',
+          deadline: parts[2] || 'TBC',
         });
       }
     }

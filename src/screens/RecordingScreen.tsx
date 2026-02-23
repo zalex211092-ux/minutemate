@@ -69,15 +69,7 @@ export function RecordingScreen({ meeting, onUpdateMeeting }: RecordingScreenPro
   // Force navigation with page reload
   window.location.href = '/transcript';
 };
-  onUpdateMeeting(updated);
-  console.log('Meeting updated, navigating...');
-  
-  setTimeout(() => {
-    navigate('/transcript');
-    console.log('Navigation called');
-  }, 100);
-};
-
+ 
   const handleAddMarker = (type: RecordingMarker['type']) => {
     addMarker(type);
   };

@@ -63,6 +63,14 @@ export function RecordingScreen({ meeting, onUpdateMeeting }: RecordingScreenPro
     updatedAt: new Date().toISOString(),
   };
   
+  // Save to localStorage
+  localStorage.setItem('minutemate_current_meeting', JSON.stringify(updated));
+  onUpdateMeeting(updated);
+  
+  // Force full page reload to /transcript - this guarantees fresh state read from localStorage
+  window.location.href = '/transcript';
+};
+  
   // Save to localStorage first
   localStorage.setItem('minutemate_current_meeting', JSON.stringify(updated));
   onUpdateMeeting(updated);

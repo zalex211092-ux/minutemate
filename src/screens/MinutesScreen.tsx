@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   FileText, CheckSquare, MessageSquare, Copy, Download,
   Mail, Edit3, Save, Check, Loader2, Home, Shield, Users,
-  Clock, MapPin, Hash, Calendar, ChevronRight, AlertTriangle
+  Clock, MapPin, Calendar, ChevronRight, RefreshCw
 } from 'lucide-react';
 import { generateMinutes, extractActionsFromMinutes } from '../services/minutesGenerator';
 import { exportToPDF, exportToDOCX, copyToClipboard, generateEmailLink } from '../services/exportService';
@@ -210,11 +210,29 @@ function extractExecutiveSummary(raw: string): string | null {
   return match ? match[1].trim() : null;
 }
 
-function extractTitle(raw: string): string {
-  const match = raw.match(/^# (.*)/m);
-  return match ? match[1].trim() : 'Meeting Minutes';
-}
+function GeneratingStages() {
+  const stages = [
+    'Analysing transcript…',
+    'Identifying key topics…',
+    'Extracting action items…',
+    'Drafting minutes…',
+    'Finalising document…',
+  ];
+  const [index, setIndex] = useState(0);
 
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setIndex(i => (i + 1) % stages.length);
+    }, 2000);
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <p className="text-slate-400 text-sm transition-all duration-500">
+      {stages[index]}
+    </p>
+  );
+}
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 export function MinutesScreen({ meeting, onSaveMinutes, onFinalize }: MinutesScreenProps) {
   const navigate = useNavigate();
@@ -271,7 +289,6 @@ export function MinutesScreen({ meeting, onSaveMinutes, onFinalize }: MinutesScr
   const TypeIcon = typeConfig.icon;
   const sections = minutes ? parseMinutesIntoSections(minutes) : [];
   const execSummary = minutes ? extractExecutiveSummary(minutes) : null;
-  const docTitle = minutes ? extractTitle(minutes) : typeConfig.label;
 
   // ─── Tab bar ────────────────────────────────────────────────────────────────
   const tabs = [
@@ -351,13 +368,13 @@ export function MinutesScreen({ meeting, onSaveMinutes, onFinalize }: MinutesScr
       {activeTab === 'minutes' && (
         <>
           {isGenerating ? (
-            <div className="flex flex-col items-center justify-center py-20 bg-white rounded-2xl ring-1 ring-slate-100">
-              <div className={`w-12 h-12 rounded-2xl bg-gradient-to-br ${typeConfig.gradient} flex items-center justify-center mb-4`}>
-                <Loader2 className="w-6 h-6 text-white animate-spin" />
-              </div>
-              <p className="text-slate-600 font-medium">Generating minutes…</p>
-              <p className="text-slate-400 text-sm mt-1">Analysing transcript</p>
-            </div>
+  <div className="flex flex-col items-center justify-center py-20 bg-white rounded-2xl ring-1 ring-slate-100">
+    <div className={`w-14 h-14 rounded-2xl bg-gradient-to-br ${typeConfig.gradient} flex items-center justify-center mb-6 shadow-lg`}>
+      <Loader2 className="w-7 h-7 text-white animate-spin" />
+    </div>
+    <p className="text-slate-800 font-semibold text-base mb-1">Generating minutes…</p>
+    <GeneratingStages />
+  </div>
           ) : isEditing ? (
             <div className="bg-white rounded-2xl ring-1 ring-slate-100 overflow-hidden">
               <div className="flex items-center justify-between px-4 py-3 bg-slate-50 border-b border-slate-100">
@@ -402,14 +419,24 @@ export function MinutesScreen({ meeting, onSaveMinutes, onFinalize }: MinutesScr
                 </div>
               ))}
 
-              {/* Edit button */}
-              <button
-                onClick={() => setIsEditing(true)}
-                className="w-full flex items-center justify-center gap-2 py-3 text-sm font-medium text-slate-500 hover:text-slate-700 border border-dashed border-slate-200 rounded-xl hover:border-slate-300 transition-colors"
-              >
-                <Edit3 className="w-4 h-4" />
-                Edit raw markdown
-              </button>
+              {/* Edit + Regenerate buttons */}
+<div className="flex gap-2">
+  <button
+    onClick={() => setIsEditing(true)}
+    className="flex-1 flex items-center justify-center gap-2 py-3 text-sm font-medium text-slate-500 hover:text-slate-700 border border-dashed border-slate-200 rounded-xl hover:border-slate-300 transition-colors"
+  >
+    <Edit3 className="w-4 h-4" />
+    Edit
+  </button>
+  <button
+    onClick={handleGenerateMinutes}
+    disabled={isGenerating}
+    className="flex-1 flex items-center justify-center gap-2 py-3 text-sm font-medium text-slate-500 hover:text-slate-700 border border-dashed border-slate-200 rounded-xl hover:border-slate-300 transition-colors disabled:opacity-40"
+  >
+    <RefreshCw className="w-4 h-4" />
+    Regenerate
+  </button>
+</div>
             </div>
           ) : (
             <div className="text-center py-16 text-slate-400 bg-white rounded-2xl ring-1 ring-slate-100">

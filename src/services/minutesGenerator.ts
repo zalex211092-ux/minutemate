@@ -76,9 +76,17 @@ ${attendees.map(a => `- **${a.name}** – ${a.role}`).join('\n') || 'No attendee
 
 ## Action Items ([count])
 
+## Action Items ([count])
+
 | Action | Owner | Deadline |
 |:-------|:-----:|:---------|
 [One row per action. Owner is Team/Manager/HR/All. Deadline is TBC if not stated. Strip trailing noise like "have a coffee". Convert "make sure you're not late" into "Arrive punctually for all scheduled shifts".]
+
+## ACTIONS_JSON
+\`\`\`json
+[{"action": "...", "owner": "...", "deadline": "..."}, ...]
+\`\`\`
+(Repeat every action from the table above as a JSON array. This section is required even if there are no actions — use an empty array [].)
 
 ## Follow-up
 
@@ -120,7 +128,7 @@ IMPORTANT RULES:
     },
     body: JSON.stringify({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 2000,
+      max_tokens: 4000,
       messages: [{ role: 'user', content: prompt }],
     }),
   });
@@ -131,7 +139,10 @@ IMPORTANT RULES:
   }
 
   const data = await response.json();
-  return data.content[0].text;
+  const raw = data.content[0].text;
+// Strip the ACTIONS_JSON block from the visible minutes
+const cleaned = raw.replace(/## ACTIONS_JSON[\s\S]*?```json[\s\S]*?```/g, '').trim();
+return cleaned;
 }
 
 // ============================================================================
@@ -192,18 +203,34 @@ Document prepared by MinuteMate | ${getConfidentialityLevel(type)} | Generated: 
 // ============================================================================
 
 export function extractActionsFromMinutes(minutesText: string): ActionItem[] {
-  const actions: ActionItem[] = [];
+  // Try JSON block first (reliable)
+  const jsonMatch = minutesText.match(/```json\s*(\[[\s\S]*?\])\s*```/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[1]);
+      return parsed
+        .filter((a: { action?: string }) => a.action && !a.action.includes('No actions'))
+        .map((a: { action: string; owner: string; deadline: string }) => ({
+          id: crypto.randomUUID(),
+          action: a.action,
+          owner: a.owner || 'TBC',
+          deadline: a.deadline || 'TBC',
+        }));
+    } catch {
+      // fall through to regex
+    }
+  }
 
+  // Fallback: original regex parser
+  const actions: ActionItem[] = [];
   const match = minutesText.match(
     /\|\s*Action\s*\|\s*Owner\s*\|\s*Deadline\s*\|\n\|[-:| ]+\|\n([\s\S]*?)(?=\n##|\n---|$)/i
   );
-
   if (match) {
     const lines = match[1]
       .split('\n')
       .filter(l => l.startsWith('|') && !/Action\s*\|/i.test(l))
       .map(l => l.split('|').map(p => p.trim()).filter(Boolean));
-
     for (const parts of lines) {
       if (parts.length >= 2 && !parts[0].includes('No actions')) {
         actions.push({
@@ -215,7 +242,6 @@ export function extractActionsFromMinutes(minutesText: string): ActionItem[] {
       }
     }
   }
-
   return actions;
 }
 

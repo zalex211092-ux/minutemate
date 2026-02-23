@@ -64,7 +64,7 @@ export function RecordingScreen({ meeting, onUpdateMeeting }: RecordingScreenPro
   };
   
   // Save to localStorage first
-  localStorage.setItem('currentMeeting', JSON.stringify(updated));
+  localStorage.setItem('minutemate_current_meeting', JSON.stringify(updated));
   onUpdateMeeting(updated);
   
   // Use React Router navigation

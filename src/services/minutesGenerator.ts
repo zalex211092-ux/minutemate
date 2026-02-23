@@ -75,7 +75,7 @@ ${(type === 'disciplinary' || type === 'investigation') ? generateHRAddendum(typ
 }
 
 // ============================================================================
-// TRANSCRIPT PARSING - ROBUST VERSION
+// TRANSCRIPT PARSING - FIXED VERSION
 // ============================================================================
 
 function parseTranscript(transcript: string | undefined): ParsedContent {
@@ -83,48 +83,39 @@ function parseTranscript(transcript: string | undefined): ParsedContent {
   const decisions: string[] = [];
   const actions: ActionItem[] = [];
 
-  if (!transcript || transcript.trim().length < 5) {
+  if (!transcript || transcript.trim().length < 10) {
     return { keyPoints, decisions, transcriptActions: actions };
   }
 
-  // STEP 1: Smart text segmentation for unpunctuated speech
-  let text = transcript;
+  // STEP 1: Preprocess - normalize and clean
+  let text = preprocessTranscript(transcript);
   
-  // Normalize whitespace
-  text = text.replace(/\s+/g, ' ').trim();
+  // STEP 2: Extract semantic units (not just sentence splits)
+  const units = extractSemanticUnits(text);
   
-  // STEP 2: Clean filler words but preserve meaning
-  text = cleanFillerWords(text);
-  
-  // STEP 3: Add punctuation boundaries for run-on speech
-  text = addSentenceBoundaries(text);
-  
-  // STEP 4: Split into units (sentences or intent phrases)
-  const units = splitIntoUnits(text);
-  
-  // STEP 5: Process each unit
+  // STEP 3: Process each unit
   for (const unit of units) {
-    const cleaned = unit.trim();
-    if (cleaned.length < 8) continue; // Too short to be meaningful
+    // Skip fragments and noise
+    if (isFragment(unit) || isNoise(unit)) continue;
     
-    // Try to extract as action first
-    const action = extractActionSmart(cleaned);
+    // Try to extract as action first (priority)
+    const action = extractActionRobust(unit);
     if (action) {
       actions.push(action);
       continue;
     }
     
     // Try to extract as decision
-    const decision = extractDecisionSmart(cleaned);
+    const decision = extractDecisionRobust(unit);
     if (decision) {
       decisions.push(decision);
       continue;
     }
     
     // Must be a discussion point
-    const discussionPoint = createDiscussionPoint(cleaned);
+    const discussionPoint = createDiscussionPointRobust(unit);
     if (discussionPoint) {
-      const topic = detectTopic(discussionPoint);
+      const topic = detectTopicRobust(discussionPoint);
       if (!keyPoints.has(topic)) {
         keyPoints.set(topic, []);
       }
@@ -136,133 +127,158 @@ function parseTranscript(transcript: string | undefined): ParsedContent {
 }
 
 // ============================================================================
-// TEXT CLEANING & SEGMENTATION
+// PREPROCESSING & SEGMENTATION
 // ============================================================================
 
-function cleanFillerWords(text: string): string {
-  // Remove filler words but keep sentence flow
+function preprocessTranscript(text: string): string {
   return text
-    .replace(/\b(um|uh|ah|er|hm|like|you know|I mean|sort of|kind of|basically|literally|actually|honestly|right|okay|ok|well)\b/gi, ' ')
+    // Normalize whitespace
+    .replace(/\s+/g, ' ')
+    // Remove common speech fillers but keep flow
+    .replace(/\b(um|uh|ah|er|hm|like|you know|I mean|sort of|kind of|basically|literally|actually|honestly)\b/gi, ' ')
+    // Fix common speech-to-text artifacts (camelCase)
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    // Normalize spacing
     .replace(/\s{2,}/g, ' ')
     .trim();
 }
 
-function addSentenceBoundaries(text: string): string {
-  // Convert speech transitions to sentence breaks
-  return text
-    // Greetings and openings
-    .replace(/^(?:hello|hi|hey|welcome|good morning|good afternoon|good evening)[,\.\s]+/i, '')
-    .replace(/(?:thank you|thanks)\s+(?:for\s+)?(?:coming|joining|attending)[,\.\s]*/gi, '. ')
-    
-    // Transition words/phrases → period
-    .replace(/\s+first\s+point\s+is\s*/gi, '. ')
-    .replace(/\s+first\s+of\s+all\s*/gi, '. ')
-    .replace(/\s+also\s+/gi, '. ')
-    .replace(/\s+additionally\s+/gi, '. ')
-    .replace(/\s+furthermore\s+/gi, '. ')
-    .replace(/\s+moreover\s+/gi, '. ')
-    .replace(/\s+however\s+/gi, '. ')
-    .replace(/\s+that\s+said\s*/gi, '. ')
-    .replace(/\s+on\s+the\s+other\s+hand\s*/gi, '. ')
-    .replace(/\s+in\s+addition\s+/gi, '. ')
-    .replace(/\s+another\s+point\s+/gi, '. ')
-    .replace(/\s+next\s+/gi, '. ')
-    .replace(/\s+moving\s+on\s*/gi, '. ')
-    .replace(/\s+finally\s+/gi, '. ')
-    .replace(/\s+lastly\s+/gi, '. ')
-    .replace(/\s+and\s+then\s+/gi, '. ')
-    .replace(/\s+so\s+/gi, '. ')
-    .replace(/\s+but\s+/gi, '. ')
-    
-    // Action indicators → period before them
-    .replace(/\s+I\s+need\s+you\s+/gi, '. ')
-    .replace(/\s+I\s+want\s+you\s+/gi, '. ')
-    .replace(/\s+we\s+need\s+to\s+/gi, '. ')
-    .replace(/\s+you\s+need\s+to\s+/gi, '. ')
-    
-    // Decision indicators
-    .replace(/\s+it\s+was\s+(?:decided|agreed|resolved)\s*/gi, '. ')
-    .replace(/\s+we\s+(?:decided|agreed|resolved)\s*/gi, '. ')
-    
-    // CamelCase fix for speech-to-text artifacts
-    .replace(/([a-z])([A-Z])/g, '$1 $2')
-    
-    // Ensure spaces after periods
-    .replace(/\.\s*/g, '. ')
-    .trim();
-}
-
-function splitIntoUnits(text: string): string[] {
-  // Split by sentence endings or logical breaks
-  const units = text
-    .split(/[.!?]+/)
-    .map(u => u.trim())
-    .filter(u => u.length >= 8);
+function extractSemanticUnits(text: string): string[] {
+  const units: string[] = [];
   
-  // If no splits occurred (no punctuation), try splitting by conjunctions
-  if (units.length <= 1 && text.length > 50) {
-    return text
-      .split(/\s+(?:and|but|also)\s+/i)
-      .map(u => u.trim())
-      .filter(u => u.length >= 8);
+  // First, try to identify natural boundaries in speech
+  // Pattern: Look for [transition] + [subject] + [verb] structures
+  
+  // Replace transition words with markers for splitting
+  const marked = text
+    // Remove opening pleasantries completely
+    .replace(/^(?:and\s+)?(?:welcome|hello|hi|hey|good morning|good afternoon|good evening)[,\.\s]+/i, '')
+    .replace(/(?:thank you|thanks)\s+(?:for\s+)?(?:coming|joining|attending)[,\.\s]*/gi, '')
+    
+    // Mark transition boundaries
+    .replace(/\s+(?:first|firstly|first of all|to start|to begin)\s+/gi, ' .SPLIT. ')
+    .replace(/\s+(?:second|secondly|next|then|after that|following that)\s+/gi, ' .SPLIT. ')
+    .replace(/\s+(?:another thing|another point|also|additionally|furthermore|moreover)\s+/gi, ' .SPLIT. ')
+    .replace(/\s+(?:however|but|although|though)\s+/gi, ' .SPLIT. ')
+    .replace(/\s+(?:finally|lastly|to conclude|in summary)\s+/gi, ' .SPLIT. ')
+    
+    // Mark action boundaries
+    .replace(/\s+(?:I need you|I want you|you need|you must|please ensure)\s+/gi, ' .SPLIT. $1 ')
+    .replace(/\s+(?:we need to|we should|we must)\s+/gi, ' .SPLIT. $1 ')
+    .trim();
+  
+  // Split by markers and periods
+  const rawUnits = marked
+    .split(/(?:\.SPLIT\.|[.!?])/)
+    .map(u => u.trim())
+    .filter(u => u.length >= 15); // Minimum meaningful length
+  
+  // Additional processing: handle "is that" constructions
+  for (const unit of rawUnits) {
+    // Check if this contains multiple clauses we should split
+    const clauses = unit.split(/\s+(?:is that|was that|means that)\s+/i);
+    if (clauses.length > 1) {
+      units.push(...clauses.map(c => c.trim()).filter(c => c.length >= 15));
+    } else {
+      units.push(unit);
+    }
   }
   
   return units;
 }
 
 // ============================================================================
-// CONTENT EXTRACTION - SMART VERSIONS
+// VALIDATION FUNCTIONS
 // ============================================================================
 
-function extractActionSmart(text: string): ActionItem | null {
+function isFragment(text: string): boolean {
+  // Check if text is an incomplete sentence fragment
+  const fragmentPatterns = [
+    // Ends with conjunction or preposition (incomplete)
+    /\b(that|which|who|when|where|what|how|if|because|since|although|while|before|after|during|in|on|at|to|for|with|by|about|into|through|during|before|after|above|below|between|under|again|further|then|once)\s*$/i,
+    
+    // Starts with incomplete phrases
+    /^(?:and|but|or|so|then|also|plus|minus|in|on|at|to|for|with|by|about|into|through|during)\s+$/i,
+    
+    // Just a subordinate clause starter
+    /^(?:in one of|one of|some of|many of|most of|all of|none of|any of|each of|every one of)\s*$/i,
+    
+    // Ends with verb waiting for object
+    /\b(need|want|should|must|will|can|could|would|may|might|touch|discuss|review|check|improve|increase|decrease|start|begin|continue|finish|complete)\s*$/i,
+    
+    // Too short after cleaning
+    /^.{0,20}$/,
+  ];
+  
+  return fragmentPatterns.some(pattern => pattern.test(text));
+}
+
+function isNoise(text: string): boolean {
+  const noisePatterns = [
+    /^(?:yes|no|yeah|nah|okay|ok|right|sure|fine|great|good|excellent|perfect|thanks|thank you)\b/i,
+    /^(?:welcome|hello|hi|hey)\b/i,
+    /^(?:any questions|does that make sense|is that clear|are we good)\b/i,
+    /^(?:moving on|let's continue|next slide)\b/i,
+    /^\d+$/,
+  ];
+  
+  return noisePatterns.some(pattern => pattern.test(text));
+}
+
+// ============================================================================
+// CONTENT EXTRACTION - ROBUST VERSIONS
+// ============================================================================
+
+function extractActionRobust(text: string): ActionItem | null {
   const lower = text.toLowerCase();
   
-  // Must have action indicators
-  const hasActionVerb = /\b(need|want|must|require|ensure|make sure|complete|finish|submit|review|send|prepare|update|check|arrange|organize|deliver|provide|create|implement|follow|monitor|track|report|address|handle|resolve|fix|improve|increase|reduce|maintain|achieve|meet|reach|establish|set up|schedule|plan|coordinate|communicate|inform|notify|contact|call|email|share|distribute|present|demonstrate|explain|train|guide|assist|help|support|manage|lead|direct|oversee|supervise|delegate|assign|allocate|approve|authorize|sign|confirm|verify|validate|test|audit|inspect|assess|evaluate|measure|analyze|research|investigate|find|identify|determine)\b/.test(lower);
+  // Must contain directive language
+  const hasDirective = /\b(need|want|must|require|ensure|make sure|complete|finish|submit|review|send|prepare|update|check|arrange|organize|deliver|provide|create|implement|follow|monitor|track|report|address|handle|resolve|fix|improve|increase|reduce|maintain|achieve|meet|reach|establish|set up|schedule|plan|coordinate|communicate|inform|notify|contact|call|email|share|distribute|present|demonstrate|explain|train|guide|assist|help|support|manage|lead|direct|oversee|supervise|delegate|assign|allocate|approve|authorize|sign|confirm|verify|validate|test|audit|inspect|assess|evaluate|measure|analyze|research|investigate|find|identify|determine|decide|agree|commit|promise|guarantee|insist|demand|request|ask|tell|instruct|order|command|advise|recommend|suggest|propose|offer|volunteer|consent|accept|endorse|back)\b/.test(lower);
   
-  const hasSubject = /\b(you|we|I|team|staff|manager|employee|everyone)\b/.test(lower);
+  const hasSubject = /\b(you|we|I|team|staff|manager|employee|everyone|people|guys)\b/.test(lower);
   
-  if (!hasActionVerb) return null;
+  if (!hasDirective) return null;
   
-  // Transform to professional action
+  // Clean and transform
   let action = text;
   
-  // Remove leading connectors
-  action = action.replace(/^(?:and|so|but|then)\s+/i, '');
-  
-  // Transform directive phrases
+  // Remove trailing optional clauses (like "if you want", "or something", "have a coffee")
   action = action
+    .replace(/\s+if\s+(?:you\s+)?(?:want|need|like|prefer).*/i, '')
+    .replace(/\s+or\s+(?:something|whatever|etc).*/i, '')
+    .replace(/\s+to\s+have\s+(?:a|an)\s+(?:coffee|tea|break|drink).*/i, '')
+    .replace(/\s+and\s+(?:have|get|take)\s+(?:a|an)\s+.*/i, '')
+    .trim();
+  
+  // Transform to professional format
+  action = action
+    // Convert directives
     .replace(/\bI\s+(?:need|want)\s+(?:you\s+guys|you\s+all|you)\s+to\b/gi, 'Team to')
+    .replace(/\byou\s+(?:guys|all)\s+(?:need|must)\s+to\b/gi, 'Team to')
     .replace(/\bwe\s+need\s+to\b/gi, 'To')
     .replace(/\byou\s+(?:need|must)\s+to\b/gi, '')
     .replace(/\bmake\s+sure\s+(?:you\s+)?/gi, '')
     .replace(/\bensure\s+(?:you\s+)?/gi, '');
   
-  // Clean up remaining pronouns
-  action = action.replace(/\byou guys\b/gi, 'Team');
-  action = action.replace(/\byou\b/gi, 'Team');
-  
   // Consolidate punctuality phrases
-  if (/\b(?:on time|not be late|cannot be late|arrive early|come early|punctual)\b/i.test(action)) {
+  if (/\b(?:on time|not be late|cannot be late|arrive|punctual|early|late|shift)\b/i.test(action)) {
     action = action
-      .replace(/\b(?:be|arrive|come)\s+(?:on time|punctually|early)\b/gi, 'arrive punctually')
+      .replace(/\b(?:be|arrive|come)\s+(?:on time|punctually)\s+(?:for|on)?\s*(?:shift|work)?/gi, 'Arrive punctually for shifts')
       .replace(/\b(?:not be late|cannot be late|don't be late)\b/gi, '')
       .replace(/\b10\s+minutes\s+(?:early|earlier)\b/gi, '')
       .replace(/\s{2,}/g, ' ');
   }
   
-  // Clean up filler endings
-  action = action.replace(/\s+(?:or something|or whatever|etc|so on|maybe).*$/i, '');
-  
-  action = action.trim();
+  // Clean up
+  action = action
+    .replace(/\b(?:maybe|perhaps|possibly|might|could|should)\s+/gi, '')
+    .trim();
   
   // Validate
   if (action.length < 10 || action.length > 120) return null;
   
-  // Capitalize first letter
+  // Ensure professional start
   action = action.charAt(0).toUpperCase() + action.slice(1);
-  
-  // Ensure it ends with period (no, actions don't end with periods in tables usually, but for completeness)
   action = action.replace(/[.!?;,]+$/, '');
   
   // Determine owner
@@ -283,13 +299,13 @@ function extractActionSmart(text: string): ActionItem | null {
   };
 }
 
-function extractDecisionSmart(text: string): string | null {
-  if (!/\b(?:decided|agreed|resolved|concluded|approved|confirmed|determined)\b/i.test(text)) {
+function extractDecisionRobust(text: string): string | null {
+  if (!/\b(?:decided|agreed|resolved|concluded|approved|confirmed|determined|established)\b/i.test(text)) {
     return null;
   }
   
   let decision = text
-    .replace(/^(?:it\s+was|we|I|the\s+team)\s+(?:was\s+)?(?:decided|agreed|resolved|concluded|approved|confirmed|determined)(?:\s+that)?\s*/i, '')
+    .replace(/^(?:it\s+was|we|I|the\s+team)\s+(?:was\s+)?(?:decided|agreed|resolved|concluded|approved|confirmed|determined|established)(?:\s+that)?\s*/i, '')
     .replace(/\b(?:the\s+)?(?:decision|agreement)\s+(?:is|was)\s+/i, '')
     .trim();
   
@@ -298,61 +314,68 @@ function extractDecisionSmart(text: string): string | null {
   return decision.charAt(0).toUpperCase() + decision.slice(1).replace(/[.!?;,]+$/, '') + '.';
 }
 
-function createDiscussionPoint(text: string): string | null {
-  // Skip obvious noise
-  if (/^(?:welcome|hello|hi|hey|thanks|okay|so|well|and|the)\b/i.test(text)) return null;
-  if (text.length < 15) return null;
+function createDiscussionPointRobust(text: string): string | null {
+  // Skip if too short or looks like noise
+  if (text.length < 20) return null;
   
   let point = text;
   
-  // Transform discussion phrases to summary format
+  // Remove leading incomplete phrases
+  point = point.replace(/^(?:in one of|one of|some of|the|a|an)\s+/i, '');
+  
+  // Transform to professional summary format
   point = point
-    .replace(/\b(?:we|I)\s+(?:discussed|talked about|went over|looked at|touched base on)\b/gi, 'Discussion covered')
-    .replace(/\b(?:we|I)\s+(?:need to discuss|should discuss)\b/gi, 'Discussion required on')
-    .replace(/\b(?:we|I)\s+noted\b/gi, 'Noted')
-    .replace(/\b(?:we|I)\s+mentioned\b/gi, 'Raised')
-    .replace(/\b(?:we|I)\s+explained\b/gi, 'Explained')
-    .replace(/\bsales\s+of\b/gi, 'sales performance for');
+    // Meeting topic starters
+    .replace(/\b(?:we|I)\s+(?:need to touch|touch|discuss|talk about|go over|look at|review|address)\b/gi, 'Discussion covered')
+    .replace(/\b(?:we|I)\s+(?:noted|mentioned|raised|brought up|highlighted)\b/gi, 'Noted')
+    .replace(/\b(?:we|I)\s+(?:explained|clarified|went through)\b/gi, 'Explained')
+    .replace(/\b(?:we|I)\s+(?:agreed|concurred)\b/gi, 'Consensus on')
+    .replace(/\b(?:we|I)\s+(?:emphasized|stressed)\b/gi, 'Emphasized')
+    .replace(/\b(?:we|I)\s+(?:identified|recognized)\b/gi, 'Identified')
+    
+    // Handle specific content patterns
+    .replace(/\bthis\s+is\s+(?:the\s+)?(?:most important|critical|key|main|primary)\s+thing\b/gi, 'Priority focus identified')
+    .replace(/\bimproving\s+sales\s+in\b/gi, 'Sales improvement for');
   
-  // Remove rambling endings
-  point = point.replace(/\s+(?:or something|or whatever|etc|and so on).*$/i, '');
+  // Remove trailing noise
+  point = point
+    .replace(/\s+this\s+is\s+(?:the\s+)?(?:most important|critical|key).*/i, '')
+    .replace(/\s+if\s+(?:you|we).*/i, '')
+    .trim();
   
-  point = point.trim();
+  // Validate it's a complete thought
+  if (point.length < 20 || point.length > 120) return null;
   
-  if (point.length < 15 || point.length > 120) return null;
+  // Check it doesn't end with a preposition (fragment)
+  if (/\b(that|which|who|when|where|what|how|if|because|for|to|in|on|at|with|by)\s*$/i.test(point)) {
+    return null;
+  }
   
-  // Ensure it starts with a capital
+  // Capitalize and punctuate
   point = point.charAt(0).toUpperCase() + point.slice(1);
-  
-  // Ensure it ends with period
   if (!/[.!?]$/.test(point)) point += '.';
   
   return point;
 }
 
 // ============================================================================
-// TOPIC DETECTION
+// TOPIC DETECTION - ENHANCED
 // ============================================================================
 
-function detectTopic(text: string): string {
+function detectTopicRobust(text: string): string {
   const lower = text.toLowerCase();
   
-  const topics = [
-    { pattern: /\b(?:sales|revenue|profit|target|client|customer|business development|pipeline|increase sales|bar sales)\b/, topic: 'Sales & Business Development' },
-    { pattern: /\b(?:shift|schedule|attendance|punctual|late|timekeeping|roster|on time|on shift|arrive|come early)\b/, topic: 'Attendance & Scheduling' },
-    { pattern: /\b(?:budget|cost|financial|expense|spend|cash flow|invoice|money)\b/, topic: 'Finance' },
-    { pattern: /\b(?:performance|review|training|development|career|progress|appraisal)\b/, topic: 'Performance & Development' },
-    { pattern: /\b(?:project|deadline|delivery|milestone|timeline)\b/, topic: 'Projects' },
-    { pattern: /\b(?:complaint|feedback|service|customer experience|guest)\b/, topic: 'Customer Service' },
-    { pattern: /\b(?:safety|compliance|risk|security|health|hazard)\b/, topic: 'Safety & Compliance' },
-    { pattern: /\b(?:operation|process|procedure|system|workflow)\b/, topic: 'Operations' },
-    { pattern: /\b(?:food|beverage|menu|kitchen|bar|drink)\b/, topic: 'Food & Beverage' },
-    { pattern: /\b(?:staff|hiring|recruitment|vacancy|turnover)\b/, topic: 'Staffing' },
-  ];
-  
-  for (const { pattern, topic } of topics) {
-    if (pattern.test(lower)) return topic;
-  }
+  // Priority-ordered patterns
+  if (/\b(?:sales|revenue|profit|target|client|customer|business development|pipeline|improving sales)\b/.test(lower)) return 'Sales & Business Development';
+  if (/\b(?:shift|schedule|attendance|punctual|late|timekeeping|roster|on time|arrive|early)\b/.test(lower)) return 'Attendance & Scheduling';
+  if (/\b(?:performance|review|development|career|progress|appraisal|assessment)\b/.test(lower)) return 'Performance & Development';
+  if (/\b(?:budget|cost|financial|expense|spend|cash flow|invoice|money|profit)\b/.test(lower)) return 'Finance';
+  if (/\b(?:project|deadline|delivery|milestone|timeline)\b/.test(lower)) return 'Projects';
+  if (/\b(?:complaint|feedback|service|customer experience|guest|visitor)\b/.test(lower)) return 'Customer Service';
+  if (/\b(?:safety|compliance|risk|security|health|hazard|policy)\b/.test(lower)) return 'Safety & Compliance';
+  if (/\b(?:food|beverage|menu|kitchen|bar|drink|service)\b/.test(lower)) return 'Food & Beverage';
+  if (/\b(?:staff|hiring|recruitment|vacancy|turnover|team)\b/.test(lower)) return 'Staffing';
+  if (/\b(?:operation|process|procedure|system|workflow)\b/.test(lower)) return 'Operations';
   
   return 'General Matters';
 }
@@ -368,21 +391,18 @@ function consolidateKeyPoints(keyPoints: Map<string, string[]>): Map<string, str
     const uniquePoints: string[] = [];
     
     for (const point of points) {
-      // Check if similar to existing
-      const isSimilar = uniquePoints.some(existing => 
-        calculateSimilarity(existing, point) > 0.75
-      );
+      // Check similarity with existing
+      let isDuplicate = false;
       
-      if (!isSimilar) {
-        uniquePoints.push(point);
-      } else {
-        // Merge with similar point - keep the more professional one
-        const idx = uniquePoints.findIndex(existing => 
-          calculateSimilarity(existing, point) > 0.75
-        );
-        if (idx !== -1) {
-          uniquePoints[idx] = mergePoints(uniquePoints[idx], point);
+      for (const existing of uniquePoints) {
+        if (calculateSimilarity(existing, point) > 0.7) {
+          isDuplicate = true;
+          break;
         }
+      }
+      
+      if (!isDuplicate) {
+        uniquePoints.push(point);
       }
     }
     
@@ -398,21 +418,13 @@ function mergeAndConsolidateActions(existing: ActionItem[], parsed: ActionItem[]
   const merged = [...existing];
   
   for (const parsedAction of parsed) {
-    // Check for similar existing action
     const similarIdx = merged.findIndex(existing => 
       calculateSimilarity(existing.action, parsedAction.action) > 0.75 ||
-      (existing.action.includes(parsedAction.action.substring(0, 15)) && 
-       existing.owner === parsedAction.owner)
+      (existing.action.toLowerCase().includes(parsedAction.action.toLowerCase().substring(0, 20)))
     );
     
     if (similarIdx === -1) {
       merged.push(parsedAction);
-    } else {
-      // Merge - keep the more complete one
-      const existing = merged[similarIdx];
-      if (parsedAction.action.length > existing.action.length) {
-        merged[similarIdx] = { ...parsedAction, id: existing.id };
-      }
     }
   }
   
@@ -420,11 +432,12 @@ function mergeAndConsolidateActions(existing: ActionItem[], parsed: ActionItem[]
 }
 
 function calculateSimilarity(str1: string, str2: string): number {
-  const normalize = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
+  const normalize = (s: string) => s.toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim();
   const s1 = normalize(str1);
   const s2 = normalize(str2);
   
-  // Jaccard similarity on words
+  if (s1 === s2) return 1.0;
+  
   const words1 = new Set(s1.split(/\s+/));
   const words2 = new Set(s2.split(/\s+/));
   
@@ -433,13 +446,6 @@ function calculateSimilarity(str1: string, str2: string): number {
   
   if (union.size === 0) return 0;
   return intersection.size / union.size;
-}
-
-function mergePoints(p1: string, p2: string): string {
-  // Return the more comprehensive one, or combine if different aspects
-  if (p1.length > p2.length) return p1;
-  if (p2.length > p1.length) return p2;
-  return p1; // They're similar enough, keep first
 }
 
 // ============================================================================
@@ -491,9 +497,8 @@ function formatActionsTable(actions: ActionItem[]): string {
   
   const rows = actions.map(a => {
     let action = a.action.replace(/\|/g, '/');
-    // Truncate if too long for table
     if (action.length > 60) action = action.substring(0, 57) + '...';
-    return `| ${action} | ${a.owner} | ${a.deadline || 'TBC'} |`;
+    return `| ${action} | ${a.owner} | ${a.deadline || 'TBC'} |';
   });
   
   return ['| Action | Owner | Deadline |', '|:-------|:-----:|:---------|', ...rows].join('\n');
